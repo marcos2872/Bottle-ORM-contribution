@@ -434,6 +434,19 @@ where
     }
 
     /// Adds a BETWEEN clause to the query.
+    ///
+    /// # Arguments
+    ///
+    /// * `col` - The column name
+    /// * `start` - The start value of the range
+    /// * `end` - The end value of the range
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// query.between("age", 18, 30)
+    /// // SQL: AND "age" BETWEEN 18 AND 30
+    /// ```
     pub fn between<V>(mut self, col: &'static str, start: V, end: V) -> Self
     where
         V: 'static + for<'q> Encode<'q, Any> + Type<Any> + Send + Sync + Clone,
@@ -442,7 +455,9 @@ where
         let is_main_col = self.columns.contains(&col.to_snake_case());
         let clause: FilterFn = Box::new(move |query, args, driver, arg_counter| {
             query.push_str(" AND ");
-            if is_main_col {
+            if let Some((table, column)) = col.split_once(".") {
+                query.push_str(&format!("\"{}\".\"{}\"", table, column));
+            } else if is_main_col {
                 query.push_str(&format!("\"{}\".\"{}\"", table_id, col));
             } else {
                 query.push_str(&format!("\"{}\"", col));
@@ -465,6 +480,12 @@ where
     }
 
     /// Adds an OR BETWEEN clause to the query.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// query.between("age", 18, 30).or_between("salary", 5000, 10000)
+    /// ```
     pub fn or_between<V>(mut self, col: &'static str, start: V, end: V) -> Self
     where
         V: 'static + for<'q> Encode<'q, Any> + Type<Any> + Send + Sync + Clone,
@@ -473,7 +494,9 @@ where
         let is_main_col = self.columns.contains(&col.to_snake_case());
         let clause: FilterFn = Box::new(move |query, args, driver, arg_counter| {
             query.push_str(" OR ");
-            if is_main_col {
+            if let Some((table, column)) = col.split_once(".") {
+                query.push_str(&format!("\"{}\".\"{}\"", table, column));
+            } else if is_main_col {
                 query.push_str(&format!("\"{}\".\"{}\"", table_id, col));
             } else {
                 query.push_str(&format!("\"{}\"", col));
@@ -496,6 +519,13 @@ where
     }
 
     /// Adds an IN list clause to the query.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// query.in_list("status", vec!["active", "pending"])
+    /// // SQL: AND "status" IN ('active', 'pending')
+    /// ```
     pub fn in_list<V>(mut self, col: &'static str, values: Vec<V>) -> Self
     where
         V: 'static + for<'q> Encode<'q, Any> + Type<Any> + Send + Sync + Clone,
@@ -513,7 +543,9 @@ where
         let is_main_col = self.columns.contains(&col.to_snake_case());
         let clause: FilterFn = Box::new(move |query, args, driver, arg_counter| {
             query.push_str(" AND ");
-            if is_main_col {
+            if let Some((table, column)) = col.split_once(".") {
+                query.push_str(&format!("\"{}\".\"{}\"", table, column));
+            } else if is_main_col {
                 query.push_str(&format!("\"{}\".\"{}\"", table_id, col));
             } else {
                 query.push_str(&format!("\"{}\"", col));
@@ -554,7 +586,9 @@ where
         let is_main_col = self.columns.contains(&col.to_snake_case());
         let clause: FilterFn = Box::new(move |query, args, driver, arg_counter| {
             query.push_str(" OR ");
-            if is_main_col {
+            if let Some((table, column)) = col.split_once(".") {
+                query.push_str(&format!("\"{}\".\"{}\"", table, column));
+            } else if is_main_col {
                 query.push_str(&format!("\"{}\".\"{}\"", table_id, col));
             } else {
                 query.push_str(&format!("\"{}\"", col));
@@ -983,6 +1017,12 @@ where
     }
 
     /// Adds a raw LEFT JOIN clause with a placeholder and a bound value.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// query.left_join_raw("posts", "posts.user_id = ?", user_id)
+    /// ```
     pub fn left_join_raw<V>(mut self, table: &str, on: &str, value: V) -> Self
     where
         V: 'static + for<'q> Encode<'q, Any> + Type<Any> + Send + Sync + Clone,
@@ -991,6 +1031,12 @@ where
     }
 
     /// Adds a raw RIGHT JOIN clause with a placeholder and a bound value.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// query.right_join_raw("users", "users.id = ?", user_id)
+    /// ```
     pub fn right_join_raw<V>(mut self, table: &str, on: &str, value: V) -> Self
     where
         V: 'static + for<'q> Encode<'q, Any> + Type<Any> + Send + Sync + Clone,
@@ -999,6 +1045,12 @@ where
     }
 
     /// Adds a raw INNER JOIN clause with a placeholder and a bound value.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// query.inner_join_raw("accounts", "accounts.user_id = ?", user_id)
+    /// ```
     pub fn inner_join_raw<V>(mut self, table: &str, on: &str, value: V) -> Self
     where
         V: 'static + for<'q> Encode<'q, Any> + Type<Any> + Send + Sync + Clone,
@@ -1007,6 +1059,12 @@ where
     }
 
     /// Adds a raw FULL JOIN clause with a placeholder and a bound value.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// query.full_join_raw("profiles", "profiles.user_id = ?", user_id)
+    /// ```
     pub fn full_join_raw<V>(mut self, table: &str, on: &str, value: V) -> Self
     where
         V: 'static + for<'q> Encode<'q, Any> + Type<Any> + Send + Sync + Clone,
@@ -1131,10 +1189,11 @@ where
     /// * `table` - The name of the table to join with
     /// * `on` - The join condition
     ///
-    /// # Note
+    /// # Example
     ///
-    /// Support for FULL JOIN depends on the underlying database engine (e.g., SQLite
-    /// does not support FULL JOIN directly).
+    /// ```rust,ignore
+    /// query.full_join("profiles", "profiles.user_id = users.id")
+    /// ```
     pub fn full_join(self, table: &str, on: &str) -> Self {
         self.join_generic("FULL", table, on)
     }

@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.24] - 2026-03-01
+
+### Fixed
+- **Complex Filter Alias Support**: Fixed `in_list`, `or_in_list`, `between`, and `or_between` to correctly handle table aliases/prefixes in column names (e.g., `rp.role_id`) by properly splitting the string and applying quotes. This prevents `column "rp.role_id" does not exist` errors on PostgreSQL.
+
 ## [0.4.23] - 2026-03-01
 
 ### Fixed
