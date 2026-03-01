@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.25] - 2026-03-01
+
+### Fixed
+- **Postgres Temporal Type Support**: Expanded temporal type detection in `is_temporal_type()` and `get_postgres_type_cast()` to include common PostgreSQL names like `TIMESTAMP WITH TIME ZONE`. This ensures correct JSON casting on the PostgreSQL driver when using the SQLx `Any` driver.
+
 ## [0.4.24] - 2026-03-01
 
 ### Fixed

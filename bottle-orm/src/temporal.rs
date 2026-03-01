@@ -326,20 +326,31 @@ pub fn bind_temporal_value(
 ///
 /// The PostgreSQL type cast string (e.g., "::TIMESTAMPTZ")
 pub fn get_postgres_type_cast(sql_type: &str) -> &'static str {
-    match sql_type {
-        "TIMESTAMPTZ" | "DateTime" => "::TIMESTAMPTZ",
-        "TIMESTAMP" | "NaiveDateTime" => "::TIMESTAMP",
-        "DATE" | "NaiveDate" => "::DATE",
-        "TIME" | "NaiveTime" => "::TIME",
+    let normalized = sql_type.to_uppercase();
+    match normalized.as_str() {
+        "TIMESTAMPTZ" | "TIMESTAMP WITH TIME ZONE" | "DATETIME" => "::TIMESTAMPTZ",
+        "TIMESTAMP" | "TIMESTAMP WITHOUT TIME ZONE" | "NAIVEDATETIME" => "::TIMESTAMP",
+        "DATE" | "NAIVEDATE" => "::DATE",
+        "TIME" | "NAIVETIME" => "::TIME",
         _ => "",
     }
 }
 
 /// Checks if a SQL type is a temporal type.
 pub fn is_temporal_type(sql_type: &str) -> bool {
+    let normalized = sql_type.to_uppercase();
     matches!(
-        sql_type,
-        "TIMESTAMPTZ" | "DateTime" | "TIMESTAMP" | "NaiveDateTime" | "DATE" | "NaiveDate" | "TIME" | "NaiveTime"
+        normalized.as_str(),
+        "TIMESTAMPTZ"
+            | "TIMESTAMP WITH TIME ZONE"
+            | "TIMESTAMP"
+            | "TIMESTAMP WITHOUT TIME ZONE"
+            | "DATETIME"
+            | "DATE"
+            | "TIME"
+            | "NAIVEDATETIME"
+            | "NAIVEDATE"
+            | "NAIVETIME"
     )
 }
 
