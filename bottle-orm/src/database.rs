@@ -84,7 +84,7 @@ impl Database {
     /// # Type Parameters
     ///
     /// * `T` - The Model type to query.
-    pub fn model<T: Model + Send + Sync + Unpin>(&self) -> QueryBuilder<T, Self> {
+    pub fn model<T: Model + Send + Sync + Unpin + crate::AnyImpl>(&self) -> QueryBuilder<T, Self> {
         let active_columns = T::active_columns();
         let mut columns: Vec<String> = Vec::with_capacity(active_columns.capacity());
 
@@ -92,7 +92,7 @@ impl Database {
             columns.push(col.strip_prefix("r#").unwrap_or(col).to_snake_case());
         }
 
-        QueryBuilder::new(self.clone(), self.driver, T::table_name(), T::columns(), columns)
+        QueryBuilder::new(self.clone(), self.driver, T::table_name(), <T as Model>::columns(), columns)
     }
 
     /// Creates a raw SQL query builder.

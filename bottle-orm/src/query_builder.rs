@@ -247,6 +247,9 @@ pub struct QueryBuilder<T, E> {
     /// Whether to include soft-deleted records in query results
     pub(crate) with_deleted: bool,
 
+    /// UNION and UNION ALL clauses
+    pub(crate) union_clauses: Vec<(String, FilterFn)>,
+
     /// PhantomData to bind the generic type T
     pub(crate) _marker: PhantomData<T>,
 }
@@ -257,7 +260,7 @@ pub struct QueryBuilder<T, E> {
 
 impl<T, E> QueryBuilder<T, E>
 where
-    T: Model + Send + Sync + Unpin,
+    T: Model + Send + Sync + Unpin + AnyImpl,
     E: Connection,
 {
     // ========================================================================
@@ -317,6 +320,7 @@ where
             limit: None,
             offset: None,
             with_deleted: false,
+            union_clauses: Vec::new(),
             _marker: PhantomData,
         }
     }
@@ -373,6 +377,182 @@ where
 
         self.where_clauses.push(clause);
         self
+    }
+
+    /// Adds a WHERE IN (SUBQUERY) clause to the query.
+    ///
+    /// This allows for filtering a column based on the results of another query.
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// let subquery = db.model::<Post>().select("user_id").filter("views", ">", 1000);
+    /// db.model::<User>().filter_subquery("id", Op::In, subquery).scan().await?;
+    /// ```
+    pub fn filter_subquery<S, SE>(mut self, col: &'static str, op: Op, mut subquery: QueryBuilder<S, SE>) -> Self
+    where
+        S: Model + Send + Sync + Unpin + AnyImpl + 'static,
+        SE: Connection + 'static,
+    {
+        subquery.apply_soft_delete_filter();
+        let table_id = self.get_table_identifier();
+        let is_main_col = self.columns.contains(&col.to_snake_case());
+        let op_str = op.as_sql();
+
+        let clause: FilterFn = Box::new(move |query, args, _driver, arg_counter| {
+            query.push_str(" AND ");
+            if let Some((table, column)) = col.split_once(".") {
+                query.push_str(&format!("\"{}\".\"{}\"", table, column));
+            } else if is_main_col {
+                query.push_str(&format!("\"{}\".\"{}\"", table_id, col));
+            } else {
+                query.push_str(&format!("\"{}\"", col));
+            }
+            query.push_str(&format!(" {} (", op_str));
+
+            subquery.write_select_sql::<S>(query, args, arg_counter);
+            query.push_str(")");
+        });
+
+        self.where_clauses.push(clause);
+        self
+    }
+
+    /// Truncates the table associated with this Model.
+    ///
+    /// Uses TRUNCATE TABLE for Postgres/MySQL and DELETE FROM for SQLite.
+    ///
+    /// # Returns
+    /// * `Ok(())` on success
+    /// * `Err(sqlx::Error)` on database failure
+    pub async fn truncate(self) -> Result<(), sqlx::Error> {
+        let table_name = self.table_name.to_snake_case();
+        let query = match self.driver {
+            Drivers::Postgres | Drivers::MySQL => format!("TRUNCATE TABLE \"{}\"", table_name),
+            Drivers::SQLite => format!("DELETE FROM \"{}\"", table_name),
+        };
+
+        if self.debug_mode {
+            log::debug!("SQL: {}", query);
+        }
+
+        self.tx.execute(&query, AnyArguments::default()).await?;
+        
+        // For SQLite, reset auto-increment if exists
+        if matches!(self.driver, Drivers::SQLite) {
+            let _ = self.tx.execute(&format!("DELETE FROM sqlite_sequence WHERE name='{}'", table_name), AnyArguments::default()).await;
+        }
+
+        Ok(())
+    }
+
+    /// Combines the results of this query with another query using UNION.
+    pub fn union(self, other: QueryBuilder<T, E>) -> Self where T: AnyImpl + 'static, E: 'static {
+        self.union_internal("UNION", other)
+    }
+
+    /// Combines the results of this query with another query using UNION ALL.
+    pub fn union_all(self, other: QueryBuilder<T, E>) -> Self where T: AnyImpl + 'static, E: 'static {
+        self.union_internal("UNION ALL", other)
+    }
+
+    fn union_internal(mut self, op: &str, mut other: QueryBuilder<T, E>) -> Self where T: AnyImpl + 'static, E: 'static {
+        other.apply_soft_delete_filter();
+        let op_owned = op.to_string();
+        
+        self.union_clauses.push((op_owned.clone(), Box::new(move |query: &mut String, args: &mut AnyArguments<'_>, _driver: &Drivers, arg_counter: &mut usize| {
+            query.push_str(" ");
+            query.push_str(&op_owned);
+            query.push_str(" ");
+            other.write_select_sql::<T>(query, args, arg_counter);
+        })));
+        self
+    }
+
+    /// Internal helper to write the SELECT SQL to a string buffer.
+    pub(crate) fn write_select_sql<R: AnyImpl>(
+        &self,
+        query: &mut String,
+        args: &mut AnyArguments,
+        arg_counter: &mut usize,
+    ) {
+        query.push_str("SELECT ");
+
+        if self.is_distinct {
+            query.push_str("DISTINCT ");
+        }
+
+        query.push_str(&self.select_args_sql::<R>().join(", "));
+
+        // Build FROM clause
+        query.push_str(" FROM \"");
+        query.push_str(&self.table_name.to_snake_case());
+        query.push_str("\" ");
+        if let Some(alias) = &self.alias {
+            query.push_str(&format!("{} ", alias));
+        }
+
+        if !self.joins_clauses.is_empty() {
+            for join_clause in &self.joins_clauses {
+                query.push(' ');
+                join_clause(query, args, &self.driver, arg_counter);
+            }
+        }
+
+        query.push_str(" WHERE 1=1");
+
+        // Apply WHERE clauses
+        for clause in &self.where_clauses {
+            clause(query, args, &self.driver, arg_counter);
+        }
+
+        // Apply GROUP BY
+        if !self.group_by_clauses.is_empty() {
+            query.push_str(&format!(" GROUP BY {}", self.group_by_clauses.join(", ")));
+        }
+
+        // Apply HAVING
+        if !self.having_clauses.is_empty() {
+            query.push_str(" HAVING 1=1");
+            for clause in &self.having_clauses {
+                clause(query, args, &self.driver, arg_counter);
+            }
+        }
+
+        // Apply ORDER BY clauses
+        if !self.order_clauses.is_empty() {
+            query.push_str(&format!(" ORDER BY {}", self.order_clauses.join(", ")));
+        }
+
+        // Apply LIMIT clause
+        if let Some(limit) = self.limit {
+            query.push_str(" LIMIT ");
+            match self.driver {
+                Drivers::Postgres => {
+                    query.push_str(&format!("${}", arg_counter));
+                    *arg_counter += 1;
+                }
+                _ => query.push('?'),
+            }
+            let _ = args.add(limit as i64);
+        }
+
+        // Apply OFFSET clause
+        if let Some(offset) = self.offset {
+            query.push_str(" OFFSET ");
+            match self.driver {
+                Drivers::Postgres => {
+                    query.push_str(&format!("${}", arg_counter));
+                    *arg_counter += 1;
+                }
+                _ => query.push('?'),
+            }
+            let _ = args.add(offset as i64);
+        }
+
+        // Apply UNION clauses
+        for (_op, clause) in &self.union_clauses {
+            clause(query, args, &self.driver, arg_counter);
+        }
     }
 
     /// Adds a WHERE clause to the query.
@@ -985,6 +1165,8 @@ where
 
         if let Some((table_name, alias)) = table.split_once(" ") {
             self.join_aliases.insert(table_name.to_snake_case(), alias.to_string());
+        } else {
+            self.join_aliases.insert(table.to_snake_case(), table.to_string());
         }
 
         self.joins_clauses.push(Box::new(move |query, _args, _driver, _arg_counter| {
@@ -1083,6 +1265,8 @@ where
         
         if let Some((table_name, alias)) = table.split_once(" ") {
             self.join_aliases.insert(table_name.to_snake_case(), alias.to_string());
+        } else {
+            self.join_aliases.insert(table.to_snake_case(), table.to_string());
         }
 
         self.joins_clauses.push(Box::new(move |query, args, driver, arg_counter| {
@@ -1325,7 +1509,7 @@ where
     /// ```
     pub async fn sum<N>(mut self, column: &str) -> Result<N, sqlx::Error>
     where
-        N: FromAnyRow + for<'r> Decode<'r, Any> + Type<Any> + Send + Unpin,
+        N: FromAnyRow + AnyImpl + for<'r> Decode<'r, Any> + Type<Any> + Send + Unpin,
     {
         self.select_columns = vec![format!("SUM({})", column)];
         self.scalar::<N>().await
@@ -1346,7 +1530,7 @@ where
     /// ```
     pub async fn avg<N>(mut self, column: &str) -> Result<N, sqlx::Error>
     where
-        N: FromAnyRow + for<'r> Decode<'r, Any> + Type<Any> + Send + Unpin,
+        N: FromAnyRow + AnyImpl + for<'r> Decode<'r, Any> + Type<Any> + Send + Unpin,
     {
         self.select_columns = vec![format!("AVG({})", column)];
         self.scalar::<N>().await
@@ -1367,7 +1551,7 @@ where
     /// ```
     pub async fn min<N>(mut self, column: &str) -> Result<N, sqlx::Error>
     where
-        N: FromAnyRow + for<'r> Decode<'r, Any> + Type<Any> + Send + Unpin,
+        N: FromAnyRow + AnyImpl + for<'r> Decode<'r, Any> + Type<Any> + Send + Unpin,
     {
         self.select_columns = vec![format!("MIN({})", column)];
         self.scalar::<N>().await
@@ -1388,7 +1572,7 @@ where
     /// ```
     pub async fn max<N>(mut self, column: &str) -> Result<N, sqlx::Error>
     where
-        N: FromAnyRow + for<'r> Decode<'r, Any> + Type<Any> + Send + Unpin,
+        N: FromAnyRow + AnyImpl + for<'r> Decode<'r, Any> + Type<Any> + Send + Unpin,
     {
         self.select_columns = vec![format!("MAX({})", column)];
         self.scalar::<N>().await
@@ -1625,7 +1809,7 @@ where
     pub fn insert<'b>(&'b mut self, model: &'b T) -> BoxFuture<'b, Result<(), sqlx::Error>> {
         Box::pin(async move {
             // Serialize model to a HashMap of column_name -> string_value
-            let data_map = model.to_map();
+            let data_map = Model::to_map(model);
 
             // Early return if no data to insert
             if data_map.is_empty() {
@@ -1633,7 +1817,7 @@ where
             }
 
             let table_name = self.table_name.to_snake_case();
-            let columns_info = T::columns();
+            let columns_info = <T as Model>::columns();
 
             let mut target_columns = Vec::new();
             let mut bindings: Vec<(String, &str)> = Vec::new();
@@ -1738,7 +1922,7 @@ where
             }
 
             let table_name = self.table_name.to_snake_case();
-            let columns_info = T::columns();
+            let columns_info = <T as Model>::columns();
 
             // Collect all column names for the INSERT statement
             // We use all columns defined in the model to ensure consistency across the batch
@@ -1793,7 +1977,7 @@ where
             let mut args = AnyArguments::default();
 
             for model in models {
-                let data_map = model.to_map();
+                let data_map = Model::to_map(model);
                 for col in &columns_info {
                     let val_opt = data_map.get(col.name);
                     let sql_type = col.sql_type;
@@ -1812,6 +1996,169 @@ where
             // Execute the batch INSERT query
             self.tx.execute(&query_str, args).await?;
             Ok(())
+        })
+    }
+
+    /// Inserts a record or updates it if a conflict occurs (UPSERT).
+    ///
+    /// This method provides a cross-database way to perform "Insert or Update" operations.
+    /// It uses `ON CONFLICT` for PostgreSQL and SQLite, and `ON DUPLICATE KEY UPDATE` for MySQL.
+    ///
+    /// # Arguments
+    ///
+    /// * `model` - The model instance to insert or update
+    /// * `conflict_columns` - Columns that trigger the conflict (e.g., primary key or unique columns)
+    /// * `update_columns` - Columns to update when a conflict occurs
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(u64)` - The number of rows affected
+    /// * `Err(sqlx::Error)` - Database error
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// let user = User { id: 1, username: "alice".to_string(), age: 25 };
+    ///
+    /// // If id 1 exists, update username and age
+    /// db.model::<User>().upsert(&user, &["id"], &["username", "age"]).await?;
+    /// ```
+    pub fn upsert<'b>(
+        &'b mut self,
+        model: &'b T,
+        conflict_columns: &'b [&'b str],
+        update_columns: &'b [&'b str],
+    ) -> BoxFuture<'b, Result<u64, sqlx::Error>> {
+        Box::pin(async move {
+            let data_map = Model::to_map(model);
+            if data_map.is_empty() {
+                return Ok(0);
+            }
+
+            let table_name = self.table_name.to_snake_case();
+            let columns_info = <T as Model>::columns();
+
+            let mut target_columns = Vec::new();
+            let mut bindings: Vec<(String, &str)> = Vec::new();
+
+            // Build INSERT part
+            for (col_name, value) in &data_map {
+                let col_name_clean = col_name.strip_prefix("r#").unwrap_or(col_name).to_snake_case();
+                target_columns.push(format!("\"{}\"", col_name_clean));
+
+                let sql_type = columns_info.iter().find(|c| {
+                    let c_clean = c.name.strip_prefix("r#").unwrap_or(c.name);
+                    c_clean == *col_name || c_clean.to_snake_case() == col_name_clean
+                }).map(|c| c.sql_type).unwrap_or("TEXT");
+                bindings.push((value.clone(), sql_type));
+            }
+
+            let mut arg_counter = 1;
+            let mut placeholders = Vec::new();
+            for (_, sql_type) in &bindings {
+                match self.driver {
+                    Drivers::Postgres => {
+                        let p = if temporal::is_temporal_type(sql_type) {
+                            format!("${}{}", arg_counter, temporal::get_postgres_type_cast(sql_type))
+                        } else {
+                            match *sql_type {
+                                "UUID" => format!("${}::UUID", arg_counter),
+                                "JSONB" | "jsonb" => format!("${}::JSONB", arg_counter),
+                                _ => format!("${}", arg_counter),
+                            }
+                        };
+                        placeholders.push(p);
+                        arg_counter += 1;
+                    }
+                    _ => {
+                        placeholders.push("?".to_string());
+                    }
+                }
+            }
+
+            let mut query_str = format!(
+                "INSERT INTO \"{}\" ({}) VALUES ({})",
+                table_name,
+                target_columns.join(", "),
+                placeholders.join(", ")
+            );
+
+            // Build Conflict/Update part
+            match self.driver {
+                Drivers::Postgres | Drivers::SQLite => {
+                    let conflict_cols_str = conflict_columns
+                        .iter()
+                        .map(|c| format!("\"{}\"", c.to_snake_case()))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    
+                    query_str.push_str(&format!(" ON CONFLICT ({}) DO UPDATE SET ", conflict_cols_str));
+                    
+                    let mut update_clauses = Vec::new();
+                    let mut update_bindings = Vec::new();
+
+                    for col in update_columns {
+                        let col_snake = col.to_snake_case();
+                        if let Some((_key, val_str)) = data_map.iter().find(|(k, _)| {
+                            let k_clean = k.strip_prefix("r#").unwrap_or(*k);
+                            k_clean == *col || k_clean.to_snake_case() == col_snake
+                        }) {
+                            let sql_type = columns_info.iter().find(|c| {
+                                let c_clean = c.name.strip_prefix("r#").unwrap_or(c.name);
+                                c_clean == *col || c_clean.to_snake_case() == col_snake
+                            }).map(|c| c.sql_type).unwrap_or("TEXT");
+                            
+                            let placeholder = match self.driver {
+                                Drivers::Postgres => {
+                                    let p = if temporal::is_temporal_type(sql_type) {
+                                        format!("${}{}", arg_counter, temporal::get_postgres_type_cast(sql_type))
+                                    } else {
+                                        match sql_type {
+                                            "UUID" => format!("${}::UUID", arg_counter),
+                                            "JSONB" | "jsonb" => format!("${}::JSONB", arg_counter),
+                                            _ => format!("${}", arg_counter),
+                                        }
+                                    };
+                                    arg_counter += 1;
+                                    p
+                                }
+                                _ => "?".to_string(),
+                            };
+                            update_clauses.push(format!("\"{}\" = {}", col_snake, placeholder));
+                            update_bindings.push((val_str.clone(), sql_type));
+                        }
+                    }
+                    if update_clauses.is_empty() {
+                        query_str.push_str(" NOTHING");
+                    } else {
+                        query_str.push_str(&update_clauses.join(", "));
+                    }
+                    bindings.extend(update_bindings);
+                }
+                Drivers::MySQL => {
+                    query_str.push_str(" ON DUPLICATE KEY UPDATE ");
+                    let mut update_clauses = Vec::new();
+                    for col in update_columns {
+                        let col_snake = col.to_snake_case();
+                        update_clauses.push(format!("\"{}\" = VALUES(\"{}\")", col_snake, col_snake));
+                    }
+                    query_str.push_str(&update_clauses.join(", "));
+                }
+            }
+
+            if self.debug_mode {
+                log::debug!("SQL Upsert: {}", query_str);
+            }
+
+            let mut args = AnyArguments::default();
+            for (val_str, sql_type) in bindings {
+                if args.bind_value(&val_str, sql_type, &self.driver).is_err() {
+                    let _ = args.add(val_str);
+                }
+            }
+
+            let result = self.tx.execute(&query_str, args).await?;
+            Ok(result.rows_affected())
         })
     }
 
@@ -1841,75 +2188,11 @@ where
     /// // Output: SELECT * FROM "user" WHERE 1=1 AND "age" >= $1 ORDER BY created_at DESC
     /// ```
     pub fn to_sql(&self) -> String {
-        let mut query = String::from("SELECT ");
+        let mut query = String::new();
+        let mut args = AnyArguments::default();
+        let mut arg_counter = 1;
 
-        if self.is_distinct {
-            query.push_str("DISTINCT ");
-        }
-
-        // Handle column selection
-        if self.select_columns.is_empty() {
-            query.push('*');
-        } else {
-            let mut quoted_cols = Vec::new();
-            for s in &self.select_columns {
-                for sub in s.split(',') {
-                    let sub_trimmed = sub.trim();
-                    if sub_trimmed.contains('(') || sub_trimmed == "*" || sub_trimmed.ends_with(".*") {
-                        quoted_cols.push(sub_trimmed.to_string());
-                    } else if let Some((t, c)) = sub_trimmed.split_once('.') {
-                        quoted_cols.push(format!("\"{}\".\"{}\"", t.trim_matches('"'), c.trim_matches('"')));
-                    } else {
-                        quoted_cols.push(format!("\"{}\"", sub_trimmed.trim_matches('"')));
-                    }
-                }
-            }
-            query.push_str(&quoted_cols.join(", "));
-        }
-
-        query.push_str(" FROM \"");
-        query.push_str(&self.table_name.to_snake_case());
-        query.push_str("\" ");
-
-        if let Some(alias) = &self.alias {
-            query.push_str(&format!("{} ", alias));
-        }
-
-        // Apply WHERE clauses with dummy arguments
-        let mut dummy_args = AnyArguments::default();
-        let mut dummy_counter = 1;
-
-        if !self.joins_clauses.is_empty() {
-            for join_clause in &self.joins_clauses {
-                query.push(' ');
-                join_clause(&mut query, &mut dummy_args, &self.driver, &mut dummy_counter);
-            }
-        }
-
-        query.push_str(" WHERE 1=1");
-
-        for clause in &self.where_clauses {
-            clause(&mut query, &mut dummy_args, &self.driver, &mut dummy_counter);
-        }
-
-        // Apply GROUP BY
-        if !self.group_by_clauses.is_empty() {
-            query.push_str(&format!(" GROUP BY {}", self.group_by_clauses.join(", ")));
-        }
-
-        // Apply HAVING
-        if !self.having_clauses.is_empty() {
-            query.push_str(" HAVING 1=1");
-            for clause in &self.having_clauses {
-                clause(&mut query, &mut dummy_args, &self.driver, &mut dummy_counter);
-            }
-        }
-
-        // Apply ORDER BY if present
-        if !self.order_clauses.is_empty() {
-            query.push_str(&format!(" ORDER BY {}", &self.order_clauses.join(", ")));
-        }
-
+        self.write_select_sql::<T>(&mut query, &mut args, &mut arg_counter);
         query
     }
 
@@ -1924,175 +2207,147 @@ where
     fn select_args_sql<R: AnyImpl>(&self) -> Vec<String> {
         let struct_cols = R::columns();
         let table_id = self.get_table_identifier();
+        let main_table_snake = self.table_name.to_snake_case();
 
-        if !struct_cols.is_empty() {
-            if !self.select_columns.is_empty() {
-                let mut args = Vec::new();
+        // If the struct has no columns (e.g. primitive type for scalar queries),
+        // just return the manual selects as is.
+        if struct_cols.is_empty() {
+            if self.select_columns.is_empty() {
+                return vec!["*".to_string()];
+            }
+            return self.select_columns.clone();
+        }
 
-                // Flatten potential multi-column strings like "col1, col2"
-                let mut flat_selects = Vec::new();
-                for s in &self.select_columns {
-                    if s.contains(',') {
-                        for sub in s.split(',') {
-                            flat_selects.push(sub.trim().to_string());
-                        }
-                    } else {
-                        flat_selects.push(s.trim().to_string());
-                    }
+        let mut args = Vec::new();
+
+        // Flatten multi-column strings in select_columns
+        let mut flat_selects = Vec::new();
+        for s in &self.select_columns {
+            if s.contains(',') {
+                for sub in s.split(',') {
+                    flat_selects.push(sub.trim().to_string());
                 }
-
-                // Check if there's an asterisk for the main table or all tables
-                let has_main_star = flat_selects.iter().any(|s| {
-                    s == "*"
-                        || s == &format!("{}.*", table_id)
-                        || s == &format!("{}.*", self.table_name.to_snake_case())
-                });
-
-                let mut matched_flat_indices = std::collections::HashSet::new();
-
-                for col_info in struct_cols {
-                    let col_snake = col_info.column.to_snake_case();
-                    let sql_type = col_info.sql_type;
-
-                    // A column is selected if:
-                    // 1. There is a '*' that covers it
-                    // 2. Its name is explicitly in the select list
-                    let mut is_explicitly_selected = false;
-                    for (idx, s) in flat_selects.iter().enumerate() {
-                        if s == &col_snake {
-                            is_explicitly_selected = true;
-                            matched_flat_indices.insert(idx);
-                        } else if let Some((t, c)) = s.split_once('.') {
-                            let t_clean = t.trim().trim_matches('"');
-                            let c_clean = c.trim().trim_matches('"');
-                            if (t_clean == table_id || t_clean == self.table_name.to_snake_case())
-                                && c_clean == col_snake
-                            {
-                                is_explicitly_selected = true;
-                                matched_flat_indices.insert(idx);
-                            }
-                        }
-                    }
-
-                    if has_main_star || is_explicitly_selected {
-                        if is_temporal_type(sql_type) && matches!(self.driver, Drivers::Postgres) {
-                            if !self.joins_clauses.is_empty() || self.alias.is_some() {
-                                args.push(format!(
-                                    "to_json(\"{}\".\"{}\") #>> '{{}}' AS \"{}\"",
-                                    table_id, col_snake, col_snake
-                                ));
-                            } else {
-                                args.push(format!("to_json(\"{}\") #>> '{{}}' AS \"{}\"", col_snake, col_snake));
-                            }
-                        } else if !self.joins_clauses.is_empty() || self.alias.is_some() {
-                            args.push(format!("\"{}\".\"{}\"", table_id, col_snake));
-                        } else {
-                            args.push(format!("\"{}\"", col_snake));
-                        }
-                    }
-                }
-
-                // Add any remaining manual selects that didn't match our struct columns
-                // (e.g., custom aggregate functions or columns from joined tables not in the DTO)
-                for (idx, s) in flat_selects.iter().enumerate() {
-                    if !matched_flat_indices.contains(&idx)
-                        && s != "*"
-                        && s != &format!("{}.*", table_id)
-                        && s != &format!("{}.*", self.table_name.to_snake_case())
-                    {
-                        // If it's a known temporal type in a joined table, we might still need a cast,
-                        // but we don't have the type info for joined tables here.
-                        // However, we can try to wrap potential columns in to_json if they look like they need it,
-                        // but it's safer to let the user handle it or use a proper DTO.
-                        if s.contains('(') {
-                            args.push(s.clone());
-                        } else {
-                            // If it has a dot, quote the parts
-                            if let Some((t, c)) = s.split_once('.') {
-                                args.push(format!("\"{}\".\"{}\"", t.trim_matches('"'), c.trim_matches('"')));
-                            } else {
-                                args.push(format!("\"{}\"", s.trim_matches('"')));
-                            }
-                        }
-                    }
-                }
-
-                return args;
             } else {
-                // ... (rest of the code for default select remains the same)
-                // For omitted columns, return 'omited' as placeholder value
-                return struct_cols
-                    .iter()
-                    .map(|c| {
-                        let col_snake = c.column.to_snake_case();
-                        let is_omitted = self.omit_columns.contains(&col_snake);
-                        
-                        // table_to_alias is used for the result set mapping (AS "table__col")
-                        // It MUST use the original table name snake_cased for the ORM to map it correctly
-                        let table_to_alias = if !c.table.is_empty() {
-                            c.table.to_snake_case()
-                        } else {
-                            self.table_name.to_snake_case()
-                        };
-
-                        // table_to_ref is used in the SELECT clause (SELECT "table"."col")
-                        // It uses the alias if defined, or the original table name
-                        let table_to_ref = if !c.table.is_empty() {
-                            let c_table_snake = c.table.to_snake_case();
-                            if c_table_snake == self.table_name.to_snake_case() {
-                                table_id.clone()
-                            } else {
-                                // Check if we have an alias for this joined table
-                                self.join_aliases.get(&c_table_snake).cloned().unwrap_or(c_table_snake)
-                            }
-                        } else {
-                            table_id.clone()
-                        };
-
-                        if is_omitted {
-                            // Return type-appropriate placeholder based on sql_type
-                            let placeholder = match c.sql_type {
-                                // String types
-                                "TEXT" | "VARCHAR" | "CHAR" | "STRING" => "'omited'",
-                                // Date/Time types - use epoch timestamp
-                                "TIMESTAMP" | "TIMESTAMPTZ" | "TIMESTAMP WITH TIME ZONE" => "'1970-01-01T00:00:00Z'",
-                                "DATE" => "'1970-01-01'",
-                                "TIME" => "'00:00:00'",
-                                // Numeric types
-                                "INTEGER" | "INT" | "SMALLINT" | "BIGINT" | "INT4" | "INT8" => "0",
-                                "REAL" | "FLOAT" | "DOUBLE" | "FLOAT4" | "FLOAT8" | "DECIMAL" | "NUMERIC" => "0.0",
-                                // Boolean
-                                "BOOLEAN" | "BOOL" => "false",
-                                // UUID - nil UUID
-                                "UUID" => "'00000000-0000-0000-0000-000000000000'",
-                                // JSON types
-                                "JSON" | "JSONB" => "'{}'",
-                                // Default fallback for unknown types
-                                _ => "'omited'",
-                            };
-                            format!("{} AS \"{}__{}\"", placeholder, table_to_alias, col_snake)
-                        } else if is_temporal_type(c.sql_type) && matches!(self.driver, Drivers::Postgres) {
-                            format!(
-                                "to_json(\"{}\".\"{}\") #>> '{{}}' AS \"{}__{}\"",
-                                table_to_ref, col_snake, table_to_alias, col_snake
-                            )
-                        } else {
-                            format!("\"{}\".\"{}\" AS \"{}__{}\"", table_to_ref, col_snake, table_to_alias, col_snake)
-                        }
-                    })
-                    .collect();
+                flat_selects.push(s.trim().to_string());
             }
         }
 
-        if !self.select_columns.is_empty() {
-            return self
-                .select_columns
-                .iter()
-                .map(|c| if c.contains('(') { c.clone() } else { format!("\"{}\"", c) })
-                .collect();
+        let has_main_star = flat_selects.iter().any(|s| s == "*" || s == &format!("{}.*", table_id) || s == &format!("{}.*", main_table_snake));
+
+        if self.select_columns.is_empty() || has_main_star {
+            // Select all columns from R
+            for col_info in struct_cols {
+                let col_name = col_info.column;
+                let col_snake = col_name.strip_prefix("r#").unwrap_or(col_name).to_snake_case();
+                
+                let mut table_to_use = table_id.clone();
+                if !col_info.table.is_empty() {
+                    let c_table_snake = col_info.table.to_snake_case();
+                    if c_table_snake == main_table_snake {
+                        table_to_use = table_id.clone();
+                    } else if let Some(alias) = self.join_aliases.get(&c_table_snake) {
+                        table_to_use = alias.clone();
+                    }
+                }
+
+                let is_omitted = self.omit_columns.contains(&col_snake);
+                let table_to_alias = if !col_info.table.is_empty() {
+                    col_info.table.to_snake_case()
+                } else {
+                    main_table_snake.clone()
+                };
+
+                if is_omitted {
+                    let placeholder = match col_info.sql_type {
+                        "TEXT" | "VARCHAR" | "CHAR" | "STRING" => "'omited'",
+                        "TIMESTAMP" | "TIMESTAMPTZ" | "DATE" | "TIME" => "'1970-01-01'",
+                        "INTEGER" | "INT" | "BIGINT" => "0",
+                        "REAL" | "FLOAT" | "DOUBLE" | "DECIMAL" => "0.0",
+                        "BOOLEAN" | "BOOL" => "false",
+                        "UUID" => "'00000000-0000-0000-0000-000000000000'",
+                        _ => "NULL",
+                    };
+                    args.push(format!("{} AS \"{}__{}\"", placeholder, table_to_alias, col_snake));
+                } else if is_temporal_type(col_info.sql_type) && matches!(self.driver, Drivers::Postgres) {
+                    args.push(format!("to_json(\"{}\".\"{}\") #>> '{{}}' AS \"{}__{}\"", table_to_use, col_snake, table_to_alias, col_snake));
+                } else {
+                    args.push(format!("\"{}\".\"{}\" AS \"{}__{}\"", table_to_use, col_snake, table_to_alias, col_snake));
+                }
+            }
+        } else {
+            // Handle explicit selects
+            let mut matched_flat_indices = std::collections::HashSet::new();
+            let mut matched_struct_indices = std::collections::HashSet::new();
+
+            // First pass: try to match manual selects (including aliases) to struct columns
+            for (f_idx, s) in flat_selects.iter().enumerate() {
+                let s_lower = s.to_lowercase();
+                
+                // If it's an alias "expr as alias", check if alias matches a struct column
+                if let Some((_expr, alias)) = s_lower.split_once(" as ") {
+                    let clean_alias = alias.trim().trim_matches('"').trim_matches('\'');
+                    for (s_idx, col_info) in struct_cols.iter().enumerate() {
+                        let col_name = col_info.column;
+                        let col_snake = col_name.strip_prefix("r#").unwrap_or(col_name).to_snake_case();
+                        
+                        if clean_alias == col_name || clean_alias == &col_snake {
+                            // Match! Use the manual select as-is
+                            args.push(s.clone());
+                            matched_flat_indices.insert(f_idx);
+                            matched_struct_indices.insert(s_idx);
+                            break;
+                        }
+                    }
+                } else {
+                    // Direct match "column" or "table.column"
+                    for (s_idx, col_info) in struct_cols.iter().enumerate() {
+                        let col_name = col_info.column;
+                        let col_snake = col_name.strip_prefix("r#").unwrap_or(col_name).to_snake_case();
+                        
+                        if s == col_name || s == &col_snake || s == &format!("{}.{}", table_id, col_name) || s == &format!("{}.{}", table_id, col_snake) {
+                            // Match! Use standardized quoted select
+                            let mut table_to_use = table_id.clone();
+                            if !col_info.table.is_empty() {
+                                let c_table_snake = col_info.table.to_snake_case();
+                                if c_table_snake == main_table_snake {
+                                    table_to_use = table_id.clone();
+                                } else if let Some(alias) = self.join_aliases.get(&c_table_snake) {
+                                    table_to_use = alias.clone();
+                                }
+                            }
+
+                            let table_to_alias = if !col_info.table.is_empty() {
+                                col_info.table.to_snake_case()
+                            } else {
+                                main_table_snake.clone()
+                            };
+
+                            if is_temporal_type(col_info.sql_type) && matches!(self.driver, Drivers::Postgres) {
+                                args.push(format!("to_json(\"{}\".\"{}\") #>> '{{}}' AS \"{}__{}\"", table_to_use, col_snake, table_to_alias, col_snake));
+                            } else {
+                                args.push(format!("\"{}\".\"{}\" AS \"{}__{}\"", table_to_use, col_snake, table_to_alias, col_snake));
+                            }
+                            matched_flat_indices.insert(f_idx);
+                            matched_struct_indices.insert(s_idx);
+                            break;
+                        }
+                    }
+                }
+            }
+
+            // Second pass: add remaining manual selects
+            for (idx, s) in flat_selects.iter().enumerate() {
+                if !matched_flat_indices.contains(&idx) {
+                    args.push(s.clone());
+                }
+            }
         }
 
-        vec!["*".to_string()]
+        if args.is_empty() {
+            vec!["*".to_string()]
+        } else {
+            args
+        }
     }
 
     /// Executes the query and returns a list of results.
@@ -2137,699 +2392,111 @@ where
     where
         R: FromAnyRow + AnyImpl + Send + Unpin,
     {
-        // Apply default soft delete filter if not disabled
-        if !self.with_deleted {
-            if let Some(soft_delete_col) = self.columns_info.iter().find(|c| c.soft_delete).map(|c| c.name) {
-                self = self.is_null(soft_delete_col);
-            }
-        }
-
-        // Build SELECT clause
-        let mut query = String::from("SELECT ");
-
-        if self.is_distinct {
-            query.push_str("DISTINCT ");
-        }
-
-        query.push_str(&self.select_args_sql::<R>().join(", "));
-
-        // Build FROM clause
-        query.push_str(" FROM \"");
-        query.push_str(&self.table_name.to_snake_case());
-        query.push_str("\" ");
-        if let Some(alias) = &self.alias {
-            query.push_str(&format!("{} ", alias));
-        }
-
+        self.apply_soft_delete_filter();
+        let mut query = String::new();
         let mut args = AnyArguments::default();
         let mut arg_counter = 1;
 
-        if !self.joins_clauses.is_empty() {
-            for join_clause in &self.joins_clauses {
-                query.push(' ');
-                join_clause(&mut query, &mut args, &self.driver, &mut arg_counter);
-            }
-        }
+        self.write_select_sql::<R>(&mut query, &mut args, &mut arg_counter);
 
-        query.push_str(" WHERE 1=1");
-
-        // Apply WHERE clauses
-        for clause in &self.where_clauses {
-            clause(&mut query, &mut args, &self.driver, &mut arg_counter);
-        }
-
-        // Apply GROUP BY
-        if !self.group_by_clauses.is_empty() {
-            query.push_str(&format!(" GROUP BY {}", self.group_by_clauses.join(", ")));
-        }
-
-        // Apply HAVING
-        if !self.having_clauses.is_empty() {
-            query.push_str(" HAVING 1=1");
-            for clause in &self.having_clauses {
-                clause(&mut query, &mut args, &self.driver, &mut arg_counter);
-            }
-        }
-
-        // Apply ORDER BY clauses
-        // We join multiple clauses with commas to form a valid SQL ORDER BY statement
-        if !self.order_clauses.is_empty() {
-            query.push_str(&format!(" ORDER BY {}", self.order_clauses.join(", ")));
-        }
-
-        // Apply LIMIT clause
-        if let Some(limit) = self.limit {
-            query.push_str(" LIMIT ");
-            match self.driver {
-                Drivers::Postgres => {
-                    query.push_str(&format!("${}", arg_counter));
-                    arg_counter += 1;
-                }
-                _ => query.push('?'),
-            }
-            let _ = args.add(limit as i64);
-        }
-
-        // Apply OFFSET clause
-        if let Some(offset) = self.offset {
-            query.push_str(" OFFSET ");
-            match self.driver {
-                Drivers::Postgres => {
-                    query.push_str(&format!("${}", arg_counter));
-                    // arg_counter += 1; // Not needed as this is the last clause
-                }
-                _ => query.push('?'),
-            }
-            let _ = args.add(offset as i64);
-        }
-
-        // Print SQL query to logs if debug mode is active
         if self.debug_mode {
             log::debug!("SQL: {}", query);
         }
 
-        // Execute query and fetch all results
         let rows = self.tx.fetch_all(&query, args).await?;
-
-        rows.iter().map(|row| R::from_any_row(row)).collect()
+        let mut result = Vec::with_capacity(rows.len());
+        for row in rows {
+            result.push(R::from_any_row(&row)?);
+        }
+        Ok(result)
     }
 
     /// Executes the query and maps the result to a custom DTO.
-    ///
-    /// Ideal for JOINs and projections where the return type is not a full Model.
-    ///
-    /// # Type Parameters
-    ///
-    /// * `R` - The target result type. Must implement `FromAnyRow` and `AnyImpl`.
-    ///
-    /// # Returns
-    ///
-    /// * `Ok(Vec<R>)` - Vector of results mapped to type `R`.
-    /// * `Err(sqlx::Error)` - Database error.
-    ///
-    /// # Example
-    ///
-    /// ```rust,ignore
-    /// #[derive(FromAnyRow)]
-    /// struct UserRoleDTO {
-    ///     username: String,
-    ///     role_name: String,
-    /// }
-    ///
-    /// let results: Vec<UserRoleDTO> = db.model::<User>()
-    ///     .inner_join("roles", "users.role_id = roles.id")
-    ///     .select("users.username, roles.name as role_name")
-    ///     .scan_as::<UserRoleDTO>()
-    ///     .await?;
-    /// ```
     pub async fn scan_as<R>(mut self) -> Result<Vec<R>, sqlx::Error>
     where
         R: FromAnyRow + AnyImpl + Send + Unpin,
     {
-        // Apply default soft delete filter if not disabled
-        if !self.with_deleted {
-            if let Some(soft_delete_col) = self.columns_info.iter().find(|c| c.soft_delete).map(|c| c.name) {
-                self = self.is_null(soft_delete_col);
-            }
-        }
-
-        let mut query = String::from("SELECT ");
-        if self.is_distinct {
-            query.push_str("DISTINCT ");
-        }
-
-        let table_id = self.get_table_identifier();
-
-        if self.select_columns.is_empty() {
-            let mut select_args = Vec::new();
-            let struct_cols = R::columns();
-            let main_table_snake = self.table_name.to_snake_case();
-
-            for c in struct_cols {
-                let c_name = c.column.to_snake_case();
-
-                // Determine if we should use the table name from AnyInfo
-                // If it matches a joined table or the main table, we use it.
-                // Otherwise (like UserDTO), we default to the main table.
-                let mut table_to_use = table_id.clone();
-                if !c.table.is_empty() {
-                    let c_table_snake = c.table.to_snake_case();
-                    if c_table_snake == main_table_snake
-                        || self.join_aliases.contains_key(&c_table_snake)
-                    {
-                        if c_table_snake == main_table_snake {
-                            table_to_use = table_id.clone();
-                        } else {
-                            // Use join alias if available
-                            table_to_use = self.join_aliases.get(&c_table_snake).cloned().unwrap_or(c_table_snake);
-                        }
-                    }
-                }
-
-                if is_temporal_type(c.sql_type) && matches!(self.driver, Drivers::Postgres) {
-                    select_args
-                        .push(format!("to_json(\"{}\".\"{}\") #>> '{{}}' AS \"{}\"", table_to_use, c_name, c_name));
-                } else {
-                    select_args.push(format!("\"{}\".\"{}\" AS \"{}\"", table_to_use, c_name, c_name));
-                }
-            }
-
-            if select_args.is_empty() {
-                query.push('*');
-            } else {
-                query.push_str(&select_args.join(", "));
-            }
-        } else {
-            let mut select_cols = Vec::with_capacity(self.select_columns.capacity());
-            let struct_cols = R::columns();
-
-            // Flatten multi-column strings
-            let mut flat_selects = Vec::new();
-            for s in &self.select_columns {
-                if s.contains(',') {
-                    for sub in s.split(',') {
-                        flat_selects.push(sub.trim().to_string());
-                    }
-                } else {
-                    flat_selects.push(s.trim().to_string());
-                }
-            }
-
-            for col in &flat_selects {
-                let col_trimmed = col.trim();
-                if col_trimmed == "*" {
-                    for c in &self.columns_info {
-                        let c_name = c.name.strip_prefix("r#").unwrap_or(c.name).to_snake_case();
-                        let mut is_c_temporal = false;
-                        if let Some(r_info) = struct_cols.iter().find(|rc| rc.column.to_snake_case() == c_name) {
-                            if is_temporal_type(r_info.sql_type) {
-                                is_c_temporal = true;
-                            }
-                        }
-
-                        if is_c_temporal && matches!(self.driver, Drivers::Postgres) {
-                            select_cols.push(format!(
-                                "to_json(\"{}\".\"{}\") #>> '{{}}' AS \"{}\"",
-                                table_id,
-                                c_name,
-                                c_name
-                            ));
-                        } else {
-                            select_cols.push(format!(
-                                "\"{}\".\"{}\" AS \"{}\"",
-                                table_id,
-                                c_name,
-                                c_name
-                            ));
-                        }
-                    }
-                    continue;
-                }
-
-                // Check if this column is temporal in the target DTO
-                let mut is_temporal = false;
-
-                // We need to keep the lowercase string alive to use its slice in col_name
-                let col_lower = col_trimmed.to_lowercase();
-                let mut col_name = col_trimmed;
-
-                // Handle aliases (e.g., "created_at as time" or "user.created_at as time")
-                if let Some((_, alias)) = col_lower.split_once(" as ") {
-                    col_name = alias.trim().trim_matches('"').trim_matches('\'');
-                } else if col_trimmed.contains('.') {
-                    if let Some((_, actual_col)) = col_trimmed.split_once('.') {
-                        col_name = actual_col.trim().trim_matches('"').trim_matches('\'');
-                    }
-                }
-
-                if let Some(info) = struct_cols.iter().find(|c| c.column.to_snake_case() == col_name.to_snake_case()) {
-                    if is_temporal_type(info.sql_type) {
-                        is_temporal = true;
-                    }
-                }
-
-                if col_trimmed.contains('.') {
-                    if let Some((table, column)) = col_trimmed.split_once('.') {
-                        let clean_table = table.trim().trim_matches('"');
-                        let clean_column = column.trim().trim_matches('"').split_whitespace().next().unwrap_or(column);
-
-                        if clean_column == "*" {
-                            let mut expanded = false;
-                            let table_to_compare = clean_table.to_snake_case();
-
-                            // Try to expand from struct_cols first (supports joined tables if they are in the DTO)
-                            for c in &struct_cols {
-                                let c_table_snake = c.table.to_snake_case();
-                                let table_matches = c_table_snake == table_to_compare
-                                    || self.join_aliases.get(&c_table_snake).map(|a| a == clean_table).unwrap_or(false);
-
-                                if table_matches {
-                                    let c_name = c.column.to_snake_case();
-                                    if is_temporal_type(c.sql_type) && matches!(self.driver, Drivers::Postgres) {
-                                        select_cols.push(format!(
-                                            "to_json(\"{}\".\"{}\") #>> '{{}}' AS \"{}\"",
-                                            clean_table, c_name, c_name
-                                        ));
-                                    } else {
-                                        select_cols.push(format!("\"{}\".\"{}\" AS \"{}\"", clean_table, c_name, c_name));
-                                    }
-                                    expanded = true;
-                                }
-                            }
-
-                            // Fallback to columns_info if it's the main table and not fully expanded yet
-                            if !expanded && (table_to_compare == self.table_name.to_snake_case() || table_to_compare == table_id) {
-                                for c in &self.columns_info {
-                                    let c_name = c.name.strip_prefix("r#").unwrap_or(c.name).to_snake_case();
-                                    let mut is_c_temporal = false;
-                                    if let Some(r_info) =
-                                        struct_cols.iter().find(|rc| rc.column.to_snake_case() == c_name)
-                                    {
-                                        if is_temporal_type(r_info.sql_type) {
-                                            is_c_temporal = true;
-                                        }
-                                    }
-
-                                    if is_c_temporal && matches!(self.driver, Drivers::Postgres) {
-                                        select_cols.push(format!(
-                                            "to_json(\"{}\".\"{}\") #>> '{{}}' AS \"{}\"",
-                                            clean_table, c_name, c_name
-                                        ));
-                                    } else {
-                                        select_cols
-                                            .push(format!("\"{}\".\"{}\" AS \"{}\"", clean_table, c_name, c_name));
-                                    }
-                                }
-                                expanded = true;
-                            }
-
-                            if !expanded {
-                                select_cols.push(format!("\"{}\".*", clean_table));
-                            }
-                        } else if is_temporal && matches!(self.driver, Drivers::Postgres) {
-                            select_cols.push(format!(
-                                "to_json(\"{}\".\"{}\") #>> '{{}}' AS \"{}\"",
-                                clean_table, clean_column, col_name
-                            ));
-                        } else {
-                            select_cols.push(format!("\"{}\".\"{}\" AS \"{}\"", clean_table, clean_column, col_name));
-                        }
-                    }
-                } else if is_temporal && matches!(self.driver, Drivers::Postgres) {
-                    // Extract column name from potential expression
-                    let clean_col = col_trimmed.trim_matches('"');
-                    select_cols.push(format!("to_json(\"{}\".\"{}\") #>> '{{}}' AS \"{}\"", table_id, clean_col, col_name));
-                } else if col_trimmed != col_name {
-                    select_cols.push(format!("{} AS \"{}\"", col_trimmed, col_name));
-                } else {
-                    let is_main_col = self.columns.contains(&col_trimmed.to_snake_case());
-                    if is_main_col {
-                        select_cols.push(format!("\"{}\".\"{}\"", table_id, col_trimmed));
-                    } else {
-                        select_cols.push(format!("\"{}\"", col_trimmed));
-                    }
-                }
-            }
-            query.push_str(&select_cols.join(", "));
-        }
-
-        // Build FROM clause
-        query.push_str(" FROM \"");
-        query.push_str(&self.table_name.to_snake_case());
-        query.push_str("\" ");
-        if let Some(alias) = &self.alias {
-            query.push_str(&format!("{} ", alias));
-        }
-
-        let mut args = sqlx::any::AnyArguments::default();
+        self.apply_soft_delete_filter();
+        let mut query = String::new();
+        let mut args = AnyArguments::default();
         let mut arg_counter = 1;
 
-        if !self.joins_clauses.is_empty() {
-            for join_clause in &self.joins_clauses {
-                query.push(' ');
-                join_clause(&mut query, &mut args, &self.driver, &mut arg_counter);
-            }
-        }
-
-        query.push_str(" WHERE 1=1");
-
-        for clause in &self.where_clauses {
-            clause(&mut query, &mut args, &self.driver, &mut arg_counter);
-        }
-
-        if !self.group_by_clauses.is_empty() {
-            query.push_str(&format!(" GROUP BY {}", self.group_by_clauses.join(", ")));
-        }
-
-        if !self.having_clauses.is_empty() {
-            query.push_str(" HAVING 1=1");
-            for clause in &self.having_clauses {
-                clause(&mut query, &mut args, &self.driver, &mut arg_counter);
-            }
-        }
-
-        if !self.order_clauses.is_empty() {
-            query.push_str(&format!(" ORDER BY {}", self.order_clauses.join(", ")));
-        }
-
-        if let Some(limit) = self.limit {
-            query.push_str(" LIMIT ");
-            match self.driver {
-                Drivers::Postgres => {
-                    query.push_str(&format!("${}", arg_counter));
-                    arg_counter += 1;
-                }
-                _ => query.push('?'),
-            }
-            let _ = args.add(limit as i64);
-        }
-
-        if let Some(offset) = self.offset {
-            query.push_str(" OFFSET ");
-            match self.driver {
-                Drivers::Postgres => {
-                    query.push_str(&format!("${}", arg_counter));
-                }
-                _ => query.push('?'),
-            }
-            let _ = args.add(offset as i64);
-        }
+        self.write_select_sql::<R>(&mut query, &mut args, &mut arg_counter);
 
         if self.debug_mode {
             log::debug!("SQL: {}", query);
         }
 
         let rows = self.tx.fetch_all(&query, args).await?;
-        rows.iter().map(|row| R::from_any_row(row)).collect()
+        let mut result = Vec::with_capacity(rows.len());
+        for row in rows {
+            result.push(R::from_any_row(&row)?);
+        }
+        Ok(result)
     }
 
     /// Executes the query and returns only the first result.
-    ///
-    /// This method automatically adds `LIMIT 1` and orders by the Primary Key
-    /// (if available) to ensure consistent results. It's optimized for fetching
-    /// a single row and will return an error if no rows match.
-    ///
-    /// # Type Parameters
-    ///
-    /// * `R` - The result type. Must implement `FromRow` for deserialization.
-    ///
-    /// # Returns
-    ///
-    /// * `Ok(R)` - The first matching row
-    /// * `Err(sqlx::Error)` - No rows found or database error
-    ///
-    /// # Error Handling
-    ///
-    /// Returns `sqlx::Error::RowNotFound` if no rows match the query.
-    /// Use `scan()` instead if you want an empty Vec rather than an error.
-    ///
-    /// # Example
-    ///
-    /// ```rust,ignore
-    /// // Get a specific user by ID
-    /// let user: User = db.model::<User>()
-    ///     .filter("id", "=", 1)
-    ///     .first()
-    ///     .await?;
-    ///
-    /// // Get user by UUID
-    /// let user_id = Uuid::new_v4();
-    /// let user: User = db.model::<User>()
-    ///     .filter("id", "=", user_id)
-    ///     .first()
-    ///     .await?;
-    ///
-    /// // Get the oldest user
-    /// let oldest: User = db.model::<User>()
-    ///     .order("age DESC")
-    ///     .first()
-    ///     .await?;
-    ///
-    /// // Error handling
-    /// match db.model::<User>().filter("id", "=", 999).first().await {
-    ///     Ok(user) => println!("Found: {:?}", user),
-    ///     Err(sqlx::Error::RowNotFound) => println!("User not found"),
-    ///     Err(e) => println!("Database error: {}", e),
-    /// }
-    /// ```
     pub async fn first<R>(mut self) -> Result<R, sqlx::Error>
     where
         R: FromAnyRow + AnyImpl + Send + Unpin,
     {
-        // Apply default soft delete filter if not disabled
-        if !self.with_deleted {
-            if let Some(soft_delete_col) = self.columns_info.iter().find(|c| c.soft_delete).map(|c| c.name) {
-                self = self.is_null(soft_delete_col);
-            }
-        }
-
-        // Build SELECT clause
-        let mut query = String::from("SELECT ");
-
-        if self.is_distinct {
-            query.push_str("DISTINCT ");
-        }
-
-        query.push_str(&self.select_args_sql::<R>().join(", "));
-
-        // Build FROM clause
-        query.push_str(" FROM \"");
-        query.push_str(&self.table_name.to_snake_case());
-        query.push_str("\" ");
-        if let Some(alias) = &self.alias {
-            query.push_str(&format!("{} ", alias));
-        }
-
+        self.apply_soft_delete_filter();
+        let mut query = String::new();
         let mut args = AnyArguments::default();
         let mut arg_counter = 1;
 
-        if !self.joins_clauses.is_empty() {
-            for join_clause in &self.joins_clauses {
-                query.push(' ');
-                join_clause(&mut query, &mut args, &self.driver, &mut arg_counter);
+        // Force limit 1 if not set
+        if self.limit.is_none() {
+            self.limit = Some(1);
+        }
+
+        // Apply PK ordering fallback if no order is set
+        if self.order_clauses.is_empty() {
+            let table_id = self.get_table_identifier();
+            let pk_columns: Vec<String> = <T as Model>::columns()
+                .iter()
+                .filter(|c| c.is_primary_key)
+                .map(|c| format!("\"{}\".\"{}\"", table_id, c.name.strip_prefix("r#").unwrap_or(c.name).to_snake_case()))
+                .collect();
+            
+            if !pk_columns.is_empty() {
+                self.order_clauses.push(pk_columns.iter().map(|col| format!("{} ASC", col)).collect::<Vec<_>>().join(", "));
             }
         }
 
-        query.push_str(" WHERE 1=1");
+        self.write_select_sql::<R>(&mut query, &mut args, &mut arg_counter);
 
-        // Apply WHERE clauses
-        for clause in &self.where_clauses {
-            clause(&mut query, &mut args, &self.driver, &mut arg_counter);
+        if self.debug_mode {
+            log::debug!("SQL: {}", query);
         }
 
-        // Apply GROUP BY
-        if !self.group_by_clauses.is_empty() {
-            query.push_str(&format!(" GROUP BY {}", self.group_by_clauses.join(", ")));
-        }
-
-        // Apply HAVING
-        if !self.having_clauses.is_empty() {
-            query.push_str(" HAVING 1=1");
-            for clause in &self.having_clauses {
-                clause(&mut query, &mut args, &self.driver, &mut arg_counter);
-            }
-        }
-
-        let table_id = self.get_table_identifier();
-
-        // Find primary key columns for consistent ordering
-        let pk_columns: Vec<String> = T::columns()
-            .iter()
-            .filter(|c| c.is_primary_key)
-            .map(|c| format!("\"{}\".\"{}\"", table_id, c.name.strip_prefix("r#").unwrap_or(c.name).to_snake_case()))
-            .collect();
-
-        // Apply ORDER BY clauses
-        // We join multiple clauses with commas to form a valid SQL ORDER BY statement
-        if !self.order_clauses.is_empty() {
-            query.push_str(&format!(" ORDER BY {}", self.order_clauses.join(", ")));
-        } else if !pk_columns.is_empty() {
-            // Fallback to PK ordering if no custom order is specified (ensures deterministic results)
-            query.push_str(" ORDER BY ");
-            query.push_str(&pk_columns.iter().map(|col| format!("{} ASC", col)).collect::<Vec<_>>().join(", "));
-        }
-
-        // Always add LIMIT 1 for first() queries
-        query.push_str(" LIMIT 1");
-
-        // Print SQL query to logs if debug mode is active
-        log::debug!("SQL: {}", query);
-
-        // Execute query and fetch exactly one result
         let row = self.tx.fetch_one(&query, args).await?;
         R::from_any_row(&row)
     }
 
     /// Executes the query and returns a single scalar value.
-    ///
-    /// This method is useful for fetching single values like counts, max/min values,
-    /// or specific columns without mapping to a struct or tuple.
-    ///
-    /// # Type Parameters
-    ///
-    /// * `O` - The output type. Must implement `Decode` and `Type`.
-    ///
-    /// # Example
-    ///
-    /// ```rust,ignore
-    /// // Get count of users
-    /// let count: i64 = db.model::<User>()
-    ///     .select("count(*)")
-    ///     .scalar()
-    ///     .await?;
-    ///
-    /// // Get specific field
-    /// let username: String = db.model::<User>()
-    ///     .filter("id", "=", 1)
-    ///     .select("username")
-    ///     .scalar()
-    ///     .await?;
-    /// ```
     pub async fn scalar<O>(mut self) -> Result<O, sqlx::Error>
     where
-        O: FromAnyRow + Send + Unpin,
+        O: FromAnyRow + AnyImpl + Send + Unpin,
     {
-        // Apply default soft delete filter if not disabled
-        if !self.with_deleted {
-            if let Some(soft_delete_col) = self.columns_info.iter().find(|c| c.soft_delete).map(|c| c.name) {
-                self = self.is_null(soft_delete_col);
-            }
-        }
-
-        // Build SELECT clause
-        let mut query = String::from("SELECT ");
-
-        if self.is_distinct {
-            query.push_str("DISTINCT ");
-        }
-
-        if self.select_columns.is_empty() {
-            return Err(sqlx::Error::ColumnNotFound("is not possible get data without column".to_string()));
-        }
-
-        let table_id = self.get_table_identifier();
-
-        let mut select_cols = Vec::with_capacity(self.select_columns.capacity());
-        for col in self.select_columns {
-            let col_snake = col.to_snake_case();
-            let is_main_col = self.columns.contains(&col_snake);
-            
-            // Check if this is a temporal type that needs special handling on Postgres
-            let mut is_temporal = false;
-            if matches!(self.driver, Drivers::Postgres) {
-                if let Some(info) = self.columns_info.iter().find(|c| c.name.to_snake_case() == col_snake) {
-                    if is_temporal_type(info.sql_type) {
-                        is_temporal = true;
-                    }
-                }
-            }
-
-            if !self.joins_clauses.is_empty() || self.alias.is_some() {
-                if let Some((table, column)) = col.split_once(".") {
-                    if is_temporal {
-                        select_cols.push(format!("to_json(\"{}\".\"{}\") #>> '{{}}' AS \"{}\"", table, column, column));
-                    } else {
-                        select_cols.push(format!("\"{}\".\"{}\"", table, column));
-                    }
-                } else if col.contains('(') {
-                    select_cols.push(col);
-                } else if is_main_col {
-                    if is_temporal {
-                        select_cols.push(format!("to_json(\"{}\".\"{}\") #>> '{{}}' AS \"{}\"", table_id, col, col));
-                    } else {
-                        select_cols.push(format!("\"{}\".\"{}\"", table_id, col));
-                    }
-                } else {
-                    select_cols.push(format!("\"{}\"", col));
-                }
-                continue;
-            }
-            
-            if is_temporal {
-                select_cols.push(format!("to_json(\"{}\") #>> '{{}}' AS \"{}\"", col, col));
-            } else {
-                select_cols.push(col);
-            }
-        }
-
-        query.push_str(&select_cols.join(", "));
-
-        // Build FROM clause
-        query.push_str(" FROM \"");
-        query.push_str(&self.table_name.to_snake_case());
-        query.push_str("\" ");
-        if let Some(alias) = &self.alias {
-            query.push_str(&format!("{} ", alias));
-        }
-
+        self.apply_soft_delete_filter();
+        let mut query = String::new();
         let mut args = AnyArguments::default();
         let mut arg_counter = 1;
 
-        if !self.joins_clauses.is_empty() {
-            for join_clause in &self.joins_clauses {
-                query.push(' ');
-                join_clause(&mut query, &mut args, &self.driver, &mut arg_counter);
-            }
+        // Force limit 1 if not set
+        if self.limit.is_none() {
+            self.limit = Some(1);
         }
 
-        query.push_str(" WHERE 1=1");
+        self.write_select_sql::<O>(&mut query, &mut args, &mut arg_counter);
 
-        // Apply WHERE clauses
-        for clause in &self.where_clauses {
-            clause(&mut query, &mut args, &self.driver, &mut arg_counter);
-        }
-
-        // Apply GROUP BY
-        if !self.group_by_clauses.is_empty() {
-            query.push_str(&format!(" GROUP BY {}", self.group_by_clauses.join(", ")));
-        }
-
-        // Apply HAVING
-        if !self.having_clauses.is_empty() {
-            query.push_str(" HAVING 1=1");
-            for clause in &self.having_clauses {
-                clause(&mut query, &mut args, &self.driver, &mut arg_counter);
-            }
-        }
-
-        // Apply ORDER BY
-        if !self.order_clauses.is_empty() {
-            query.push_str(&format!(" ORDER BY {}", &self.order_clauses.join(", ")));
-        }
-
-        // Always add LIMIT 1 for scalar queries
-        query.push_str(" LIMIT 1");
-
-        // Print SQL query to logs if debug mode is active
         if self.debug_mode {
             log::debug!("SQL: {}", query);
         }
 
-        // Execute query and fetch one row
         let row = self.tx.fetch_one(&query, args).await?;
-
-        // Map row to the output type using FromAnyRow
-        O::from_any_row(&row).map_err(|e| sqlx::Error::Decode(Box::new(e)))
+        O::from_any_row(&row)
     }
 
     /// Updates a single column in the database.
@@ -2863,7 +2530,7 @@ where
     ///
     /// * `Ok(u64)` - The number of rows affected
     pub fn updates<'b>(&'b mut self, model: &T) -> BoxFuture<'b, Result<u64, sqlx::Error>> {
-        self.execute_update(model.to_map())
+        self.execute_update(Model::to_map(model))
     }
 
     /// Updates columns based on a partial model (struct implementing AnyImpl).
@@ -2879,7 +2546,7 @@ where
     ///
     /// * `Ok(u64)` - The number of rows affected
     pub fn update_partial<'b, P: AnyImpl>(&'b mut self, partial: &P) -> BoxFuture<'b, Result<u64, sqlx::Error>> {
-        self.execute_update(partial.to_map())
+        self.execute_update(AnyImpl::to_map(partial))
     }
 
     /// Updates a column using a raw SQL expression.

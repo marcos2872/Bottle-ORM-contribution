@@ -95,7 +95,7 @@ impl Connection for Transaction<'_> {
 
 impl<'a> Transaction<'a> {
     /// Starts building a query within this transaction.
-    pub fn model<T: Model + Send + Sync + Unpin>(
+    pub fn model<T: Model + Send + Sync + Unpin + crate::AnyImpl>(
         &self,
     ) -> QueryBuilder<T, Self> {
         let active_columns = T::active_columns();
@@ -105,7 +105,7 @@ impl<'a> Transaction<'a> {
             columns.push(col.strip_prefix("r#").unwrap_or(col).to_snake_case());
         }
 
-        QueryBuilder::new(self.clone(), self.driver, T::table_name(), T::columns(), columns)
+        QueryBuilder::new(self.clone(), self.driver, T::table_name(), <T as Model>::columns(), columns)
     }
 
     /// Creates a raw SQL query builder attached to this transaction.

@@ -9,7 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - **Raw Update Support**: Introduced `update_raw(col, expr, value)` in `QueryBuilder` to allow updates with SQL expressions (e.g., `SET age = age + 1`) and parameter binding.
-- **Improved Soft Delete Logic**: Refactored internal update and delete operations to apply soft delete filters more consistently via `apply_soft_delete_filter()`.
+- **Unified Query Execution**: Standardized `scan`, `scan_as`, `first`, and `scalar` to use a central `write_select_sql` method, ensuring consistent SQL generation and robust argument binding across all query types.
+- **Advanced Query Features**: Completed implementation of `union`, `union_all`, and `filter_subquery` (WHERE IN subquery) with full support for argument propagation from inner queries.
+- **Smart Alias Detection**: Enhanced `select_args_sql` to robustly handle manual aliases (e.g., `name AS display_name`), preventing double-AS syntax errors while maintaining compatibility with DTO mapping.
+- **Extended Test Suite**: Added comprehensive integration tests for complex QueryBuilder scenarios including unions, subqueries, and multi-level aggregations.
+
+### Fixed
+- **Upsert Data Mapping**: Fixed a critical bug in `upsert` where column names and values were swapped in the data map, causing `ColumnDecode` errors in SQLite.
+- **Table Identification**: Improved table name resolution for joined tables and DTOs, ensuring columns are correctly prefixed even when joined tables don't have explicit aliases.
+- **Soft Delete Refactoring**: Refactored soft delete filter application to be safer and more predictable during query cloning and union operations.
+- **Compilation Warning Fixes**: Resolved multiple `unused_mut` and `unused_variable` warnings across the codebase.
 
 ## [0.4.27] - 2026-03-01
 

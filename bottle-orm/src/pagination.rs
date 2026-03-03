@@ -123,7 +123,7 @@ impl Pagination {
     /// The modified `QueryBuilder`
     pub fn apply<T, E>(mut self, query: QueryBuilder<T, E>) -> QueryBuilder<T, E>
     where
-        T: Model + Send + Sync + Unpin,
+        T: Model + Send + Sync + Unpin + AnyImpl,
         E: Connection + Send,
     {
         // Enforce max_limit again during application to ensure safety
@@ -163,7 +163,7 @@ impl Pagination {
     /// ```
     pub async fn paginate<T, E, R>(self, mut query: QueryBuilder<T, E>) -> Result<Paginated<R>, sqlx::Error>
     where
-        T: Model + Send + Sync + Unpin,
+        T: Model + Send + Sync + Unpin + AnyImpl,
         E: Connection + Send,
         R: FromAnyRow + AnyImpl + Send + Unpin,
     {
@@ -243,7 +243,7 @@ impl Pagination {
     /// * `Err(sqlx::Error)` - Database error.
     pub async fn paginate_as<T, E, R>(self, mut query: QueryBuilder<T, E>) -> Result<Paginated<R>, sqlx::Error>
     where
-        T: Model + Send + Sync + Unpin,
+        T: Model + Send + Sync + Unpin + AnyImpl,
         E: Connection + Send,
         R: FromAnyRow + AnyImpl + Send + Unpin,
     {
