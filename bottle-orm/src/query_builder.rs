@@ -97,6 +97,44 @@ use crate::{
 pub type FilterFn = Box<dyn Fn(&mut String, &mut AnyArguments<'_>, &Drivers, &mut usize) + Send + Sync>;
 
 // ============================================================================
+// Update Value Traits
+// ============================================================================
+
+/// Trait for types that can be converted to an optional string value for SQL updates.
+///
+/// This trait is used by the `update` method to handle both direct values
+/// (e.g., `update("role", "admin")`) and NULL values (e.g., `update("role", None::<String>)`).
+pub trait ToUpdateValue {
+    /// Converts the value to an `Option<String>` for SQL binding.
+    ///
+    /// # Returns
+    ///
+    /// * `Some(String)` - String representation for a database value
+    /// * `None` - Represents a SQL `NULL`
+    fn to_update_value(self) -> Option<String>;
+}
+
+macro_rules! impl_update_value {
+    ($($t:ty),*) => {
+        $(
+            impl ToUpdateValue for $t {
+                fn to_update_value(self) -> Option<String> {
+                    Some(self.to_string())
+                }
+            }
+            impl ToUpdateValue for Option<$t> {
+                fn to_update_value(self) -> Option<String> {
+                    self.map(|v| v.to_string())
+                }
+            }
+        )*
+    }
+}
+
+impl_update_value!(i8, i16, i32, i64, isize, u8, u16, u32, u64, usize, f32, f64, bool, String, &str, uuid::Uuid);
+impl_update_value!(chrono::DateTime<chrono::Utc>, chrono::DateTime<chrono::FixedOffset>, chrono::NaiveDateTime, chrono::NaiveDate, chrono::NaiveTime);
+
+// ============================================================================
 // Comparison Operators Enum
 // ============================================================================
 
@@ -1938,7 +1976,7 @@ where
             let columns_info = <T as Model>::columns();
 
             let mut target_columns = Vec::new();
-            let mut bindings: Vec<(String, &str)> = Vec::new();
+            let mut bindings: Vec<(Option<String>, &str)> = Vec::new();
 
             // Build column list and collect values with their SQL types
             for (col_name, value) in data_map {
@@ -1991,9 +2029,13 @@ where
             let mut args = AnyArguments::default();
 
             // Bind values using the optimized value_binding module
-            for (val_str, sql_type) in bindings {
-                if args.bind_value(&val_str, sql_type, &self.driver).is_err() {
-                    let _ = args.add(val_str);
+            for (val_opt, sql_type) in bindings {
+                if let Some(val_str) = val_opt {
+                    if args.bind_value(&val_str, sql_type, &self.driver).is_err() {
+                        let _ = args.add(val_str);
+                    }
+                } else {
+                    let _ = args.add(None::<String>);
                 }
             }
 
@@ -2100,12 +2142,12 @@ where
                     let val_opt = data_map.get(col.name);
                     let sql_type = col.sql_type;
 
-                    if let Some(val_str) = val_opt {
+                    if let Some(Some(val_str)) = val_opt {
                         if args.bind_value(val_str, sql_type, &self.driver).is_err() {
                             let _ = args.add(val_str.clone());
                         }
                     } else {
-                        // Bind NULL for missing values
+                        // Bind NULL for missing or None values
                         let _ = args.add(None::<String>);
                     }
                 }
@@ -2157,7 +2199,7 @@ where
             let columns_info = <T as Model>::columns();
 
             let mut target_columns = Vec::new();
-            let mut bindings: Vec<(String, &str)> = Vec::new();
+            let mut bindings: Vec<(Option<String>, &str)> = Vec::new();
 
             // Build INSERT part
             for (col_name, value) in &data_map {
@@ -2217,7 +2259,7 @@ where
 
                     for col in update_columns {
                         let col_snake = col.to_snake_case();
-                        if let Some((_key, val_str)) = data_map.iter().find(|(k, _)| {
+                        if let Some((_key, val_opt)) = data_map.iter().find(|(k, _)| {
                             let k_clean = k.strip_prefix("r#").unwrap_or(*k);
                             k_clean == *col || k_clean.to_snake_case() == col_snake
                         }) {
@@ -2243,7 +2285,7 @@ where
                                 _ => "?".to_string(),
                             };
                             update_clauses.push(format!("\"{}\" = {}", col_snake, placeholder));
-                            update_bindings.push((val_str.clone(), sql_type));
+                            update_bindings.push((val_opt.clone(), sql_type));
                         }
                     }
                     if update_clauses.is_empty() {
@@ -2269,9 +2311,13 @@ where
             }
 
             let mut args = AnyArguments::default();
-            for (val_str, sql_type) in bindings {
-                if args.bind_value(&val_str, sql_type, &self.driver).is_err() {
-                    let _ = args.add(val_str);
+            for (val_opt, sql_type) in bindings {
+                if let Some(val_str) = val_opt {
+                    if args.bind_value(&val_str, sql_type, &self.driver).is_err() {
+                        let _ = args.add(val_str);
+                    }
+                } else {
+                    let _ = args.add(None::<String>);
                 }
             }
 
@@ -2685,10 +2731,10 @@ where
     /// * `Ok(u64)` - The number of rows affected
     pub fn update<'b, V>(&'b mut self, col: &str, value: V) -> BoxFuture<'b, Result<u64, sqlx::Error>>
     where
-        V: ToString + Send + Sync,
+        V: ToUpdateValue + Send + Sync,
     {
         let mut map = std::collections::HashMap::new();
-        map.insert(col.to_string(), value.to_string());
+        map.insert(col.to_string(), value.to_update_value());
         self.execute_update(map)
     }
 
@@ -2827,7 +2873,7 @@ where
     /// Internal helper to execute an UPDATE query from a map of values.
     fn execute_update<'b>(
         &'b mut self,
-        data_map: std::collections::HashMap<String, String>,
+        data_map: std::collections::HashMap<String, Option<String>>,
     ) -> BoxFuture<'b, Result<u64, sqlx::Error>> {
         self.apply_soft_delete_filter();
 
@@ -2839,7 +2885,7 @@ where
             }
             query.push_str("SET ");
 
-            let mut bindings: Vec<(String, &str)> = Vec::new();
+            let mut bindings: Vec<(Option<String>, &str)> = Vec::new();
             let mut set_clauses = Vec::new();
 
             // Maintain argument counter for PostgreSQL ($1, $2, ...)
@@ -2894,9 +2940,13 @@ where
             let mut args = AnyArguments::default();
 
             // Bind SET values
-            for (val_str, sql_type) in bindings {
-                if args.bind_value(&val_str, sql_type, &self.driver).is_err() {
-                    let _ = args.add(val_str);
+            for (val_opt, sql_type) in bindings {
+                if let Some(val_str) = val_opt {
+                    if args.bind_value(&val_str, sql_type, &self.driver).is_err() {
+                        let _ = args.add(val_str);
+                    }
+                } else {
+                    let _ = args.add(None::<String>);
                 }
             }
 

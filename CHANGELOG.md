@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.3] - 2026-03-03
+
+### Added
+- **Nullable Update Support**: Introduced the `ToUpdateValue` trait, enabling the `update` method to accept both direct values and `Option<T>`. This allows setting columns to `NULL` using `.update("column", None::<String>)`.
+- **Enhanced Null Mapping**: Updated the `Model` trait's `to_map` method to return `HashMap<String, Option<String>>`. This ensures that `None` values are explicitly captured as `NULL` during `insert`, `updates`, and `upsert` operations, rather than being ignored.
+- **Option Type Support in Macros**: Improved `#[derive(Model)]` and `#[derive(FromAnyRow)]` to correctly handle `Option<T>` fields, ensuring they are properly stringified for database operations.
+- **Regression Test for Null Updates**: Added `bottle-orm/tests/update_null_test.rs` to verify that both direct null updates and model-based null updates work correctly across different database operations.
+
 ## [0.5.2] - 2026-03-03
 
 ### Added

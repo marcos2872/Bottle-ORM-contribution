@@ -224,9 +224,9 @@ pub fn expand(input: DeriveInput) -> TokenStream {
         let field_type = &f.ty;
         let (_, is_nullable) = rust_type_to_sql(field_type);
         if is_nullable {
-            quote! { if let Some(val) = &self.#field_name { map.insert(stringify!(#field_name).to_string(), val.to_string()); } }
+            quote! { map.insert(stringify!(#field_name).to_string(), self.#field_name.as_ref().map(|v| v.to_string())); }
         } else {
-            quote! { map.insert(stringify!(#field_name).to_string(), self.#field_name.to_string()); }
+            quote! { map.insert(stringify!(#field_name).to_string(), Some(self.#field_name.to_string())); }
         }
     });
 
@@ -252,13 +252,12 @@ pub fn expand(input: DeriveInput) -> TokenStream {
 
          impl bottle_orm::AnyImpl for #struct_name {
              fn columns() -> Vec<bottle_orm::AnyInfo> { vec![#(#col_query),*] }
-             fn to_map(&self) -> std::collections::HashMap<String, String> {
-                let mut map = std::collections::HashMap::new();
-                #(#map_inserts)*
-                map
+             fn to_map(&self) -> std::collections::HashMap<String, Option<String>> {
+                 let mut map = std::collections::HashMap::new();
+                 #(#map_inserts)*
+                 map
              }
-         }
-    }
+         }    }
 }
 
 fn is_datetime(ty: &Type) -> bool {

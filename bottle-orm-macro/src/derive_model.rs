@@ -186,19 +186,17 @@ pub fn expand(ast: DeriveInput) -> TokenStream {
 
         if is_nullable {
             return quote! {
-                if let Some(val) = &self.#field_name {
-                    map.insert(
-                        stringify!(#field_name).to_string(),
-                        val.to_string()
-                    );
-                }
+                map.insert(
+                    stringify!(#field_name).to_string(),
+                    self.#field_name.as_ref().map(|v| v.to_string())
+                );
             };
         }
 
         quote! {
             map.insert(
                 stringify!(#field_name).to_string(),
-                 self.#field_name.to_string()
+                 Some(self.#field_name.to_string())
             );
         }
     });
@@ -463,7 +461,7 @@ pub fn expand(ast: DeriveInput) -> TokenStream {
                 vec![#(stringify!(#field_names_iter) ),*]
             }
 
-            fn to_map(&self) -> std::collections::HashMap<String, String> {
+            fn to_map(&self) -> std::collections::HashMap<String, Option<String>> {
                 let mut map = std::collections::HashMap::new();
                  #(#map_inserts)*
                   map
@@ -475,7 +473,7 @@ pub fn expand(ast: DeriveInput) -> TokenStream {
                 vec![#(#any_column_defs),*]
             }
 
-            fn to_map(&self) -> std::collections::HashMap<String, String> {
+            fn to_map(&self) -> std::collections::HashMap<String, Option<String>> {
                 bottle_orm::Model::to_map(self)
             }
         }

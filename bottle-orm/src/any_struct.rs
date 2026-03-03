@@ -38,7 +38,7 @@ pub trait AnyImpl {
     fn columns() -> Vec<AnyInfo>;
 
     /// Converts this instance to a HashMap for dynamic query building.
-    fn to_map(&self) -> HashMap<String, String>;
+    fn to_map(&self) -> HashMap<String, Option<String>>;
 }
 
 /// A trait for types that can be mapped from an `AnyRow`.
@@ -60,7 +60,7 @@ macro_rules! impl_supported_primitive {
         $(
             impl AnyImpl for $t {
                 fn columns() -> Vec<AnyInfo> { Vec::new() }
-                fn to_map(&self) -> HashMap<String, String> { HashMap::new() }
+                fn to_map(&self) -> HashMap<String, Option<String>> { HashMap::new() }
             }
 
             impl FromAnyRow for $t {
@@ -86,7 +86,7 @@ macro_rules! impl_cast_primitive {
         $(
             impl AnyImpl for $t {
                 fn columns() -> Vec<AnyInfo> { Vec::new() }
-                fn to_map(&self) -> HashMap<String, String> { HashMap::new() }
+                fn to_map(&self) -> HashMap<String, Option<String>> { HashMap::new() }
             }
 
             impl FromAnyRow for $t {
@@ -117,7 +117,7 @@ impl AnyImpl for uuid::Uuid {
     fn columns() -> Vec<AnyInfo> {
         Vec::new()
     }
-    fn to_map(&self) -> HashMap<String, String> {
+    fn to_map(&self) -> HashMap<String, Option<String>> {
         HashMap::new()
     }
 }
@@ -139,7 +139,7 @@ impl AnyImpl for chrono::NaiveDateTime {
     fn columns() -> Vec<AnyInfo> {
         Vec::new()
     }
-    fn to_map(&self) -> HashMap<String, String> {
+    fn to_map(&self) -> HashMap<String, Option<String>> {
         HashMap::new()
     }
 }
@@ -173,7 +173,7 @@ impl AnyImpl for chrono::NaiveDate {
     fn columns() -> Vec<AnyInfo> {
         Vec::new()
     }
-    fn to_map(&self) -> HashMap<String, String> {
+    fn to_map(&self) -> HashMap<String, Option<String>> {
         HashMap::new()
     }
 }
@@ -195,7 +195,7 @@ impl AnyImpl for chrono::NaiveTime {
     fn columns() -> Vec<AnyInfo> {
         Vec::new()
     }
-    fn to_map(&self) -> HashMap<String, String> {
+    fn to_map(&self) -> HashMap<String, Option<String>> {
         HashMap::new()
     }
 }
@@ -217,7 +217,7 @@ impl AnyImpl for chrono::DateTime<chrono::Utc> {
     fn columns() -> Vec<AnyInfo> {
         Vec::new()
     }
-    fn to_map(&self) -> HashMap<String, String> {
+    fn to_map(&self) -> HashMap<String, Option<String>> {
         HashMap::new()
     }
 }
@@ -255,7 +255,7 @@ impl<T: AnyImpl> AnyImpl for Option<T> {
     fn columns() -> Vec<AnyInfo> {
         T::columns()
     }
-    fn to_map(&self) -> HashMap<String, String> {
+    fn to_map(&self) -> HashMap<String, Option<String>> {
         match self {
             Some(v) => v.to_map(),
             None => HashMap::new(),
@@ -294,7 +294,7 @@ macro_rules! impl_any_tuple {
                 cols
             }
 
-            fn to_map(&self) -> HashMap<String, String> {
+            fn to_map(&self) -> HashMap<String, Option<String>> {
                 let mut map = HashMap::new();
                 #[allow(non_snake_case)]
                 let ($($T,)+) = self;

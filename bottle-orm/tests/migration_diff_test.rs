@@ -18,10 +18,10 @@ impl Model for UserV1 {
         ]
     }
     fn active_columns() -> Vec<&'static str> { vec!["id", "name"] }
-    fn to_map(&self) -> HashMap<String, String> {
+    fn to_map(&self) -> HashMap<String, Option<String>> {
         let mut map = HashMap::new();
-        map.insert("id".to_string(), self.id.to_string());
-        map.insert("name".to_string(), self.name.clone());
+        map.insert("id".to_string(), Some(self.id.to_string()));
+        map.insert("name".to_string(), Some(self.name.to_string()));
         map
     }
 }
@@ -46,12 +46,12 @@ impl Model for UserV2 {
         ]
     }
     fn active_columns() -> Vec<&'static str> { vec!["id", "name", "age", "email"] }
-    fn to_map(&self) -> HashMap<String, String> {
+    fn to_map(&self) -> HashMap<String, Option<String>> {
         let mut map = HashMap::new();
-        map.insert("id".to_string(), self.id.to_string());
-        map.insert("name".to_string(), self.name.clone());
-        map.insert("age".to_string(), self.age.to_string());
-        map.insert("email".to_string(), self.email.clone());
+        map.insert("id".to_string(), Some(self.id.to_string()));
+        map.insert("name".to_string(), Some(self.name.clone()));
+        map.insert("age".to_string(), Some(self.age.to_string()));
+        map.insert("email".to_string(), Some(self.email.clone()));
         map
     }
 }
@@ -118,10 +118,10 @@ async fn test_migration_index_diffing() -> Result<(), Box<dyn std::error::Error>
             ]
         }
         fn active_columns() -> Vec<&'static str> { vec!["id", "name"] }
-        fn to_map(&self) -> HashMap<String, String> {
+        fn to_map(&self) -> HashMap<String, Option<String>> {
             let mut map = HashMap::new();
-            map.insert("id".to_string(), self.id.to_string());
-            map.insert("name".to_string(), self.name.clone());
+            map.insert("id".to_string(), Some(self.id.to_string()));
+            map.insert("name".to_string(), Some(self.name.to_string()));
             map
         }
     }

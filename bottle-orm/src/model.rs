@@ -435,13 +435,12 @@ pub struct ColumnInfo {
 ///         vec!["id", "name"]
 ///     }
 ///
-///     fn to_map(&self) -> HashMap<String, String> {
+///     fn to_map(&self) -> HashMap<String, Option<String>> {
 ///         let mut map = HashMap::new();
-///         map.insert("id".to_string(), self.id.to_string());
-///         map.insert("name".to_string(), self.name.clone());
+///         map.insert("id".to_string(), Some(self.id.to_string()));
+///         map.insert("name".to_string(), Some(self.name.clone()));
 ///         map
-///     }
-/// }
+///     }/// }
 /// ```
 pub trait Model {
     /// Returns the table name associated with this model.
@@ -561,10 +560,10 @@ pub trait Model {
     ///
     /// let map = user.to_map();
     /// assert!(map.contains_key("id"));
-    /// assert_eq!(map.get("username"), Some(&"john_doe".to_string()));
-    /// assert_eq!(map.get("age"), Some(&"25".to_string()));
+    /// assert_eq!(map.get("username"), Some(&Some("john_doe".to_string())));
+    /// assert_eq!(map.get("age"), Some(&Some("25".to_string())));
     /// ```
-    fn to_map(&self) -> HashMap<String, String>;
+    fn to_map(&self) -> HashMap<String, Option<String>>;
 }
 
 // ============================================================================
