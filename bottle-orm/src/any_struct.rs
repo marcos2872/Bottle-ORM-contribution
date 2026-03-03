@@ -147,13 +147,13 @@ impl AnyImpl for chrono::NaiveDateTime {
 impl FromAnyRow for chrono::NaiveDateTime {
     fn from_any_row(row: &AnyRow) -> Result<Self, Error> {
         let s: String = row.try_get(0).map_err(|e| Error::Decode(Box::new(e)))?;
-        s.parse().map_err(|e| Error::Decode(Box::new(e)))
+        crate::temporal::parse_naive_datetime(&s).map_err(|e| Error::Decode(Box::new(e)))
     }
 
     fn from_any_row_at(row: &AnyRow, index: &mut usize) -> Result<Self, Error> {
         let s: String = row.try_get(*index).map_err(|e| Error::Decode(Box::new(e)))?;
         *index += 1;
-        s.parse().map_err(|e| Error::Decode(Box::new(e)))
+        crate::temporal::parse_naive_datetime(&s).map_err(|e| Error::Decode(Box::new(e)))
     }
 }
 
@@ -169,13 +169,13 @@ impl AnyImpl for chrono::NaiveDate {
 impl FromAnyRow for chrono::NaiveDate {
     fn from_any_row(row: &AnyRow) -> Result<Self, Error> {
         let s: String = row.try_get(0).map_err(|e| Error::Decode(Box::new(e)))?;
-        s.parse().map_err(|e| Error::Decode(Box::new(e)))
+        crate::temporal::parse_naive_date(&s).map_err(|e| Error::Decode(Box::new(e)))
     }
 
     fn from_any_row_at(row: &AnyRow, index: &mut usize) -> Result<Self, Error> {
         let s: String = row.try_get(*index).map_err(|e| Error::Decode(Box::new(e)))?;
         *index += 1;
-        s.parse().map_err(|e| Error::Decode(Box::new(e)))
+        crate::temporal::parse_naive_date(&s).map_err(|e| Error::Decode(Box::new(e)))
     }
 }
 
@@ -191,13 +191,13 @@ impl AnyImpl for chrono::NaiveTime {
 impl FromAnyRow for chrono::NaiveTime {
     fn from_any_row(row: &AnyRow) -> Result<Self, Error> {
         let s: String = row.try_get(0).map_err(|e| Error::Decode(Box::new(e)))?;
-        s.parse().map_err(|e| Error::Decode(Box::new(e)))
+        crate::temporal::parse_naive_time(&s).map_err(|e| Error::Decode(Box::new(e)))
     }
 
     fn from_any_row_at(row: &AnyRow, index: &mut usize) -> Result<Self, Error> {
         let s: String = row.try_get(*index).map_err(|e| Error::Decode(Box::new(e)))?;
         *index += 1;
-        s.parse().map_err(|e| Error::Decode(Box::new(e)))
+        crate::temporal::parse_naive_time(&s).map_err(|e| Error::Decode(Box::new(e)))
     }
 }
 
@@ -213,13 +213,13 @@ impl AnyImpl for chrono::DateTime<chrono::Utc> {
 impl FromAnyRow for chrono::DateTime<chrono::Utc> {
     fn from_any_row(row: &AnyRow) -> Result<Self, Error> {
         let s: String = row.try_get(0).map_err(|e| Error::Decode(Box::new(e)))?;
-        s.parse().map_err(|e| Error::Decode(Box::new(e)))
+        crate::temporal::parse_datetime_utc(&s).map_err(|e| Error::Decode(Box::new(e)))
     }
 
     fn from_any_row_at(row: &AnyRow, index: &mut usize) -> Result<Self, Error> {
         let s: String = row.try_get(*index).map_err(|e| Error::Decode(Box::new(e)))?;
         *index += 1;
-        s.parse().map_err(|e| Error::Decode(Box::new(e)))
+        crate::temporal::parse_datetime_utc(&s).map_err(|e| Error::Decode(Box::new(e)))
     }
 }
 

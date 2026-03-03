@@ -51,6 +51,7 @@ use futures::future::BoxFuture;
 use heck::ToSnakeCase;
 use sqlx::{Any, Arguments, Decode, Encode, Type, any::AnyArguments};
 use std::marker::PhantomData;
+use std::collections::{HashMap, HashSet};
 
 
 // ============================================================================
@@ -2217,145 +2218,108 @@ where
         let struct_cols = R::columns();
         let table_id = self.get_table_identifier();
         let main_table_snake = self.table_name.to_snake_case();
-
-        // If the struct has no columns (e.g. primitive type for scalar queries),
-        // just return the manual selects as is.
         if struct_cols.is_empty() {
-            if self.select_columns.is_empty() {
-                return vec!["*".to_string()];
-            }
+            if self.select_columns.is_empty() { return vec!["*".to_string()]; }
             return self.select_columns.clone();
+        }
+        let mut flat_selects = Vec::new();
+        for s in &self.select_columns {
+            for sub in s.split(',') { flat_selects.push(sub.trim().to_string()); }
+        }
+        let mut expanded_tables = HashSet::new();
+        for s in &flat_selects {
+            if s == "*" { expanded_tables.insert(table_id.clone()); expanded_tables.insert(main_table_snake.clone()); }
+            else if let Some(t) = s.strip_suffix(".*") { let t_clean = t.trim().trim_matches('"'); expanded_tables.insert(t_clean.to_string()); expanded_tables.insert(t_clean.to_snake_case()); }
+        }
+        let mut col_counts = HashMap::new();
+        for col_info in &struct_cols {
+            let col_snake = col_info.column.strip_prefix("r#").unwrap_or(col_info.column).to_snake_case();
+            *col_counts.entry(col_snake).or_insert(0) += 1;
+        }
+        let is_tuple = format!("{:?}", std::any::type_name::<R>()).contains('(');
+        let mut matched_s_indices = HashSet::new();
+        let mut manual_field_map = HashMap::new();
+
+        for (f_idx, s) in flat_selects.iter().enumerate() {
+            if s == "*" || s.ends_with(".*") { continue; }
+            let s_lower = s.to_lowercase();
+            for (s_idx, col_info) in struct_cols.iter().enumerate() {
+                if matched_s_indices.contains(&s_idx) { continue; }
+                let col_snake = col_info.column.strip_prefix("r#").unwrap_or(col_info.column).to_snake_case();
+                let mut m = false;
+                if let Some((_, alias)) = s_lower.split_once(" as ") {
+                    let ca = alias.trim().trim_matches('"').trim_matches('\'');
+                    if ca == col_info.column || ca == &col_snake { m = true; }
+                } else if s == col_info.column || s == &col_snake || s.ends_with(&format!(".{}", col_info.column)) || s.ends_with(&format!(".{}", col_snake)) {
+                    m = true;
+                }
+                if m { manual_field_map.insert(f_idx, s_idx); matched_s_indices.insert(s_idx); break; }
+            }
         }
 
         let mut args = Vec::new();
-
-        // Flatten multi-column strings in select_columns
-        let mut flat_selects = Vec::new();
-        for s in &self.select_columns {
-            if s.contains(',') {
-                for sub in s.split(',') {
-                    flat_selects.push(sub.trim().to_string());
-                }
-            } else {
-                flat_selects.push(s.trim().to_string());
-            }
-        }
-
-        let has_main_star = flat_selects.iter().any(|s| s == "*" || s == &format!("{}.*", table_id) || s == &format!("{}.*", main_table_snake));
-
-        if self.select_columns.is_empty() || has_main_star {
-            // Select all columns from R
-            for col_info in struct_cols {
-                let col_name = col_info.column;
-                let col_snake = col_name.strip_prefix("r#").unwrap_or(col_name).to_snake_case();
-                
-                let mut table_to_use = table_id.clone();
+        if self.select_columns.is_empty() {
+            for (s_idx, col_info) in struct_cols.iter().enumerate() {
+                let mut t_use = table_id.clone();
                 if !col_info.table.is_empty() {
-                    let c_table_snake = col_info.table.to_snake_case();
-                    if c_table_snake == main_table_snake {
-                        table_to_use = table_id.clone();
-                    } else if let Some(alias) = self.join_aliases.get(&c_table_snake) {
-                        table_to_use = alias.clone();
-                    }
+                    let c_snake = col_info.table.to_snake_case();
+                    if c_snake == main_table_snake { t_use = table_id.clone(); }
+                    else if let Some(alias) = self.join_aliases.get(&c_snake) { t_use = alias.clone(); }
+                    else if self.join_aliases.values().any(|a| a == &col_info.table) { t_use = col_info.table.to_string(); }
                 }
-
-                let is_omitted = self.omit_columns.contains(&col_snake);
-                let table_to_alias = if !col_info.table.is_empty() {
-                    col_info.table.to_snake_case()
-                } else {
-                    main_table_snake.clone()
-                };
-
-                if is_omitted {
-                    let placeholder = match col_info.sql_type {
-                        "TEXT" | "VARCHAR" | "CHAR" | "STRING" => "'omited'",
-                        "TIMESTAMP" | "TIMESTAMPTZ" | "DATE" | "TIME" => "'1970-01-01'",
-                        "INTEGER" | "INT" | "BIGINT" => "0",
-                        "REAL" | "FLOAT" | "DOUBLE" | "DECIMAL" => "0.0",
-                        "BOOLEAN" | "BOOL" => "false",
-                        "UUID" => "'00000000-0000-0000-0000-000000000000'",
-                        _ => "NULL",
-                    };
-                    args.push(format!("{} AS \"{}__{}\"", placeholder, table_to_alias, col_snake));
-                } else if is_temporal_type(col_info.sql_type) && matches!(self.driver, Drivers::Postgres) {
-                    args.push(format!("to_json(\"{}\".\"{}\") #>> '{{}}' AS \"{}__{}\"", table_to_use, col_snake, table_to_alias, col_snake));
-                } else {
-                    args.push(format!("\"{}\".\"{}\" AS \"{}__{}\"", table_to_use, col_snake, table_to_alias, col_snake));
-                }
+                args.push(self.format_select_field::<R>(s_idx, &t_use, &main_table_snake, &col_counts, is_tuple));
             }
         } else {
-            // Handle explicit selects
-            let mut matched_flat_indices = std::collections::HashSet::new();
-            let mut matched_struct_indices = std::collections::HashSet::new();
-
-            // First pass: try to match manual selects (including aliases) to struct columns
             for (f_idx, s) in flat_selects.iter().enumerate() {
-                let s_lower = s.to_lowercase();
-                
-                // If it's an alias "expr as alias", check if alias matches a struct column
-                if let Some((_expr, alias)) = s_lower.split_once(" as ") {
-                    let clean_alias = alias.trim().trim_matches('"').trim_matches('\'');
+                let s_trim = s.trim();
+                if s_trim == "*" || s_trim.ends_with(".*") {
+                    let mut t_exp = if s_trim == "*" { String::new() } else { s_trim.strip_suffix(".*").unwrap().trim().trim_matches('"').to_string() };
+                    if !t_exp.is_empty() && (t_exp.to_snake_case() == main_table_snake || t_exp == table_id) { t_exp = table_id.clone(); }
                     for (s_idx, col_info) in struct_cols.iter().enumerate() {
-                        let col_name = col_info.column;
-                        let col_snake = col_name.strip_prefix("r#").unwrap_or(col_name).to_snake_case();
-                        
-                        if clean_alias == col_name || clean_alias == &col_snake {
-                            // Match! Use the manual select as-is
-                            args.push(s.clone());
-                            matched_flat_indices.insert(f_idx);
-                            matched_struct_indices.insert(s_idx);
-                            break;
+                        if matched_s_indices.contains(&s_idx) { continue; }
+                        let mut t_col = table_id.clone(); let mut known = false;
+                        if !col_info.table.is_empty() {
+                            let c_snake = col_info.table.to_snake_case();
+                            if c_snake == main_table_snake { t_col = table_id.clone(); known = true; }
+                            else if let Some(alias) = self.join_aliases.get(&c_snake) { t_col = alias.clone(); known = true; }
+                            else if self.join_aliases.values().any(|a| a == &col_info.table) { t_col = col_info.table.to_string(); known = true; }
                         }
+                        if !known && !t_exp.is_empty() && flat_selects.iter().filter(|x| x.ends_with(".*") || *x == "*").count() == 1 { t_col = t_exp.clone(); known = true; }
+                        if (t_exp.is_empty() && known) || (!t_exp.is_empty() && t_col == t_exp) {
+                            args.push(self.format_select_field::<R>(s_idx, &t_col, &main_table_snake, &col_counts, is_tuple));
+                            matched_s_indices.insert(s_idx);
+                        }
+                    }
+                } else if let Some(s_idx) = manual_field_map.get(&f_idx) {
+                    if s.to_lowercase().contains(" as ") { args.push(s_trim.to_string()); }
+                    else {
+                        let mut t = table_id.clone();
+                        if let Some((prefix, _)) = s_trim.split_once('.') { t = prefix.trim().trim_matches('"').to_string(); }
+                        args.push(self.format_select_field::<R>(*s_idx, &t, &main_table_snake, &col_counts, is_tuple));
                     }
                 } else {
-                    // Direct match "column" or "table.column"
-                    for (s_idx, col_info) in struct_cols.iter().enumerate() {
-                        let col_name = col_info.column;
-                        let col_snake = col_name.strip_prefix("r#").unwrap_or(col_name).to_snake_case();
-                        
-                        if s == col_name || s == &col_snake || s == &format!("{}.{}", table_id, col_name) || s == &format!("{}.{}", table_id, col_snake) {
-                            // Match! Use standardized quoted select
-                            let mut table_to_use = table_id.clone();
-                            if !col_info.table.is_empty() {
-                                let c_table_snake = col_info.table.to_snake_case();
-                                if c_table_snake == main_table_snake {
-                                    table_to_use = table_id.clone();
-                                } else if let Some(alias) = self.join_aliases.get(&c_table_snake) {
-                                    table_to_use = alias.clone();
-                                }
-                            }
-
-                            let table_to_alias = if !col_info.table.is_empty() {
-                                col_info.table.to_snake_case()
-                            } else {
-                                main_table_snake.clone()
-                            };
-
-                            if is_temporal_type(col_info.sql_type) && matches!(self.driver, Drivers::Postgres) {
-                                args.push(format!("to_json(\"{}\".\"{}\") #>> '{{}}' AS \"{}__{}\"", table_to_use, col_snake, table_to_alias, col_snake));
-                            } else {
-                                args.push(format!("\"{}\".\"{}\" AS \"{}__{}\"", table_to_use, col_snake, table_to_alias, col_snake));
-                            }
-                            matched_flat_indices.insert(f_idx);
-                            matched_struct_indices.insert(s_idx);
-                            break;
-                        }
-                    }
-                }
-            }
-
-            // Second pass: add remaining manual selects
-            for (idx, s) in flat_selects.iter().enumerate() {
-                if !matched_flat_indices.contains(&idx) {
-                    args.push(s.clone());
+                    if !s_trim.contains(' ') && !s_trim.contains('(') {
+                        if let Some((t, c)) = s_trim.split_once('.') { args.push(format!("\"{}\".\"{}\"", t.trim().trim_matches('"'), c.trim().trim_matches('"'))); }
+                        else { args.push(format!("\"{}\"", s_trim.trim_matches('"'))); }
+                    } else { args.push(s_trim.to_string()); }
                 }
             }
         }
+        if args.is_empty() { vec!["*".to_string()] } else { args }
+    }
 
-        if args.is_empty() {
-            vec!["*".to_string()]
+    fn format_select_field<R: AnyImpl>(&self, s_idx: usize, table_to_use: &str, main_table_snake: &str, col_counts: &HashMap<String, usize>, is_tuple: bool) -> String {
+        let col_info = &R::columns()[s_idx];
+        let col_snake = col_info.column.strip_prefix("r#").unwrap_or(col_info.column).to_snake_case();
+        let has_collision = *col_counts.get(&col_snake).unwrap_or(&0) > 1;
+        let alias = if is_tuple || has_collision {
+            let t_alias = if !col_info.table.is_empty() { col_info.table.to_snake_case() } else { main_table_snake.to_string() };
+            format!("{}__{}", t_alias.to_lowercase(), col_snake.to_lowercase())
+        } else { col_snake.to_lowercase() };
+        if is_temporal_type(col_info.sql_type) && matches!(self.driver, Drivers::Postgres) {
+            format!("to_json(\"{}\".\"{}\") #>> '{{}}' AS \"{}\"", table_to_use, col_snake, alias)
         } else {
-            args
+            format!("\"{}\".\"{}\" AS \"{}\"", table_to_use, col_snake, alias)
         }
     }
 

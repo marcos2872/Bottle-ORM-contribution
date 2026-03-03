@@ -23,6 +23,7 @@ struct Session {
 }
 
 #[derive(Debug, FromAnyRow, Serialize, Deserialize)]
+#[allow(dead_code)]
 struct UserDetailDTO {
     pub id: Uuid,
     pub username: String,

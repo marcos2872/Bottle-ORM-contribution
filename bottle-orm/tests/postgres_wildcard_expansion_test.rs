@@ -1,5 +1,4 @@
 use bottle_orm::{Database, Model, FromAnyRow};
-use bottle_orm::database::Drivers;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
@@ -28,6 +27,7 @@ struct RolePermission {
 }
 
 #[derive(Debug, FromAnyRow, Serialize, Deserialize)]
+#[allow(dead_code)]
 struct PermissionDTO {
     id: String,
     name: String,
@@ -35,6 +35,7 @@ struct PermissionDTO {
 }
 
 #[derive(Debug, FromAnyRow, Serialize, Deserialize)]
+#[allow(dead_code)]
 struct RoleWithPermissionDTO {
     role_id: String,
     id: String,
