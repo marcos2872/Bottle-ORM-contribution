@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.2] - 2026-03-03
+
+### Added
+- **DateTime Decoding Resilience**: Enhanced `FromAnyRow` for `DateTime<Utc>`, `NaiveDateTime`, `NaiveDate`, `NaiveTime`, and `Uuid` with a numeric (`i64`) fallback. This allows decoding from Unix timestamps in drivers that don't return ISO 8601 strings.
+- **Scalar Tuple Regression Test**: Added `bottle-orm/tests/scalar_tuple_test.rs` to verify scalar queries with tuples containing `DateTime<Utc>`, specifically for PostgreSQL `Timestamptz`.
+
+### Fixed
+- **PostgreSQL Tuple Decoding**: Fixed a critical `ColumnDecode` error in PostgreSQL when using `scalar()` with tuples (e.g., `(String, DateTime<Utc>)`). The `select_args_sql` now correctly casts temporal types to JSON/Text even when the result type is a tuple or primitive.
+- **Tuple/Primitive Index Consistency**: Standardized `FromAnyRow` implementations to use a common `from_any_row_at` pattern with an explicit index, ensuring reliable decoding for joined tables and multi-column results.
+
 ## [0.5.1] - 2026-03-03
 
 ### Added
