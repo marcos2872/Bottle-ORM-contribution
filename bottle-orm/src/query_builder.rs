@@ -1009,7 +1009,7 @@ where
     ///     .scan()
     ///     .await?;
     /// ```
-    pub fn join_raw<V>(mut self, table: &str, on: &str, value: V) -> Self
+    pub fn join_raw<V>(self, table: &str, on: &str, value: V) -> Self
     where
         V: 'static + for<'q> Encode<'q, Any> + Type<Any> + Send + Sync + Clone,
     {
@@ -1023,7 +1023,7 @@ where
     /// ```rust,ignore
     /// query.left_join_raw("posts", "posts.user_id = ?", user_id)
     /// ```
-    pub fn left_join_raw<V>(mut self, table: &str, on: &str, value: V) -> Self
+    pub fn left_join_raw<V>(self, table: &str, on: &str, value: V) -> Self
     where
         V: 'static + for<'q> Encode<'q, Any> + Type<Any> + Send + Sync + Clone,
     {
@@ -1037,7 +1037,7 @@ where
     /// ```rust,ignore
     /// query.right_join_raw("users", "users.id = ?", user_id)
     /// ```
-    pub fn right_join_raw<V>(mut self, table: &str, on: &str, value: V) -> Self
+    pub fn right_join_raw<V>(self, table: &str, on: &str, value: V) -> Self
     where
         V: 'static + for<'q> Encode<'q, Any> + Type<Any> + Send + Sync + Clone,
     {
@@ -1051,7 +1051,7 @@ where
     /// ```rust,ignore
     /// query.inner_join_raw("accounts", "accounts.user_id = ?", user_id)
     /// ```
-    pub fn inner_join_raw<V>(mut self, table: &str, on: &str, value: V) -> Self
+    pub fn inner_join_raw<V>(self, table: &str, on: &str, value: V) -> Self
     where
         V: 'static + for<'q> Encode<'q, Any> + Type<Any> + Send + Sync + Clone,
     {
@@ -1065,7 +1065,7 @@ where
     /// ```rust,ignore
     /// query.full_join_raw("profiles", "profiles.user_id = ?", user_id)
     /// ```
-    pub fn full_join_raw<V>(mut self, table: &str, on: &str, value: V) -> Self
+    pub fn full_join_raw<V>(self, table: &str, on: &str, value: V) -> Self
     where
         V: 'static + for<'q> Encode<'q, Any> + Type<Any> + Send + Sync + Clone,
     {
@@ -2882,12 +2882,99 @@ where
         self.execute_update(partial.to_map())
     }
 
-    /// Internal helper to execute an UPDATE query from a map of values.
-    fn execute_update<'b>(
+    /// Updates a column using a raw SQL expression.
+    ///
+    /// This allows for complex updates like incrementing values or using database functions.
+    /// You can use a `?` placeholder in the expression and provide a value to bind.
+    ///
+    /// # Arguments
+    ///
+    /// * `col` - The column name to update
+    /// * `expr` - The raw SQL expression (e.g., "age + 1" or "age + ?")
+    /// * `value` - The value to bind for the placeholder
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// // Increment age by 1
+    /// db.model::<User>()
+    ///     .filter("id", "=", 1)
+    ///     .update_raw("age", "age + 1", 0)
+    ///     .await?;
+    ///
+    /// // Increment age by a variable
+    /// db.model::<User>()
+    ///     .filter("id", "=", 1)
+    ///     .update_raw("age", "age + ?", 5)
+    ///     .await?;
+    /// ```
+    pub fn update_raw<'b, V>(
         &'b mut self,
-        data_map: std::collections::HashMap<String, String>,
-    ) -> BoxFuture<'b, Result<u64, sqlx::Error>> {
-        // Apply default soft delete filter if not disabled
+        col: &str,
+        expr: &str,
+        value: V,
+    ) -> BoxFuture<'b, Result<u64, sqlx::Error>>
+    where
+        V: 'static + for<'q> Encode<'q, Any> + Type<Any> + Send + Sync + Clone,
+    {
+        self.apply_soft_delete_filter();
+
+        let col_name_clean = col.strip_prefix("r#").unwrap_or(col).to_snake_case();
+        let expr_owned = expr.to_string();
+        let value_owned = value.clone();
+
+        Box::pin(async move {
+            let table_name = self.table_name.to_snake_case();
+            let mut query = format!("UPDATE \"{}\" ", table_name);
+            if let Some(alias) = &self.alias {
+                query.push_str(&format!("{} ", alias));
+            }
+            query.push_str("SET ");
+
+            let mut arg_counter = 1;
+            let mut args = AnyArguments::default();
+
+            let mut processed_expr = expr_owned.clone();
+            if let Some(pos) = processed_expr.find('?') {
+                let placeholder = match self.driver {
+                    Drivers::Postgres => {
+                        let p = format!("${}", arg_counter);
+                        arg_counter += 1;
+                        p
+                    }
+                    _ => "?".to_string(),
+                };
+                processed_expr.replace_range(pos..pos + 1, &placeholder);
+                let _ = args.add(value_owned);
+            } else {
+                // If no placeholder, we still add the value to match where_raw behavior, 
+                // but increment the counter if it's Postgres to avoid offset issues
+                // Actually, if there's no ?, Postgres doesn't care about the extra arg if we don't use it.
+                // But the next arg_counter must be correct.
+                // If we don't increment arg_counter here, the NEXT placeholder will use $1.
+                // If we ADDED a value to args, $1 will point to THIS value.
+                // So if we don't use ?, we probably SHOULD NOT add to args.
+            }
+
+            query.push_str(&format!("\"{}\" = {}", col_name_clean, processed_expr));
+
+            query.push_str(" WHERE 1=1");
+
+            for clause in &self.where_clauses {
+                clause(&mut query, &mut args, &self.driver, &mut arg_counter);
+            }
+
+            if self.debug_mode {
+                log::debug!("SQL: {}", query);
+            }
+
+            let result = self.tx.execute(&query, args).await?;
+            Ok(result.rows_affected())
+        })
+    }
+
+    /// Internal helper to apply soft delete filter to where clauses if necessary.
+    fn apply_soft_delete_filter(&mut self) {
         if !self.with_deleted {
             if let Some(soft_delete_col) = self.columns_info.iter().find(|c| c.soft_delete).map(|c| c.name) {
                 let col_owned = soft_delete_col.to_string();
@@ -2899,6 +2986,14 @@ where
                 self.where_clauses.push(clause);
             }
         }
+    }
+
+    /// Internal helper to execute an UPDATE query from a map of values.
+    fn execute_update<'b>(
+        &'b mut self,
+        data_map: std::collections::HashMap<String, String>,
+    ) -> BoxFuture<'b, Result<u64, sqlx::Error>> {
+        self.apply_soft_delete_filter();
 
         Box::pin(async move {
             let table_name = self.table_name.to_snake_case();

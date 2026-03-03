@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] - 2026-03-02
+
+### Added
+- **Raw Update Support**: Introduced `update_raw(col, expr, value)` in `QueryBuilder` to allow updates with SQL expressions (e.g., `SET age = age + 1`) and parameter binding.
+- **Improved Soft Delete Logic**: Refactored internal update and delete operations to apply soft delete filters more consistently via `apply_soft_delete_filter()`.
+
 ## [0.4.27] - 2026-03-01
 
 ### Fixed
