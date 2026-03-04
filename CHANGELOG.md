@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.4] - 2026-03-04
+
+### Added
+- **Complex DTO & Join Test**: Added `bottle-orm/tests/complex_user_dto_test.rs` to verify complex `left_join` scenarios with DTO mapping (`scan_as`) and security quoting.
+
+### Fixed
+- **Security Hardening (SQL Injection)**: All structural identifiers (table names, column names, aliases, and aggregates) are now properly quoted with double quotes to prevent SQL injection and handle reserved keywords.
+- **Mass Assignment Protection**: Implemented strict metadata validation for `update` and `upsert` operations, ensuring only columns defined in the Model can be modified.
+- **Macro Table Naming Consistency**: Fixed the `#[derive(Model)]` macro to consistently return the table name in `snake_case`, resolving "no such table" errors for PascalCase structs.
+- **Improved Wildcard Expansion**: Enhanced `select("table.*")` to automatically expand into aliased columns, preventing "ambiguous column" errors during complex joins.
+
 ## [0.5.3] - 2026-03-03
 
 ### Added
