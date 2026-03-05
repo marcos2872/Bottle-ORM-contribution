@@ -251,25 +251,28 @@ pub struct QueryBuilder<T, E> {
     pub(crate) select_columns: Vec<String>,
 
     /// Collection of WHERE clause filter functions
-    pub(crate) where_clauses: Vec<FilterFn>,
+    pub where_clauses: Vec<FilterFn>,
 
     /// Collection of ORDER BY clauses
-    pub(crate) order_clauses: Vec<String>,
+    pub order_clauses: Vec<String>,
 
     /// Collection of JOIN clause to filter entry tables
-    pub(crate) joins_clauses: Vec<FilterFn>,
+    pub joins_clauses: Vec<FilterFn>,
 
     /// Collection of relations to eager load
-    pub(crate) with_relations: Vec<String>,
+    pub with_relations: Vec<String>,
+
+    /// Modifiers for eager loading relations
+    pub with_modifiers: std::collections::HashMap<String, std::sync::Arc<dyn std::any::Any + Send + Sync>>,
 
     /// Map of table names to their aliases used in JOINS
-    pub(crate) join_aliases: std::collections::HashMap<String, String>,
+    pub join_aliases: std::collections::HashMap<String, String>,
 
     /// Maximum number of rows to return (LIMIT)
-    pub(crate) limit: Option<usize>,
+    pub limit: Option<usize>,
 
     /// Number of rows to skip (OFFSET)
-    pub(crate) offset: Option<usize>,
+    pub offset: Option<usize>,
 
     /// Activate debug mode in query
     pub(crate) debug_mode: bool,
@@ -299,6 +302,11 @@ pub struct QueryBuilder<T, E> {
 // ============================================================================
 // QueryBuilder Implementation
 // ============================================================================
+
+/// A wrapper for relation query modifiers to allow storage in Any-based collections.
+pub struct QueryModifier {
+    pub modifier: std::sync::Arc<dyn Fn(QueryBuilder<crate::any_struct::AnyImplStruct, crate::Database>) -> QueryBuilder<crate::any_struct::AnyImplStruct, crate::Database> + Send + Sync + 'static>,
+}
 
 impl<T, E> QueryBuilder<T, E>
 where
@@ -376,6 +384,7 @@ where
             with_deleted: false,
             union_clauses: Vec::new(),
             with_relations: Vec::new(),
+            with_modifiers: std::collections::HashMap::new(),
             _marker: PhantomData,
         }
     }
@@ -408,6 +417,37 @@ where
     /// ```
     pub fn with(mut self, relation: &str) -> Self {
         self.with_relations.push(relation.to_string());
+        self
+    }
+
+    /// Adds a relation to be eager loaded with a custom query modifier.
+    ///
+    /// This allows you to apply filters, ordering, and pagination to the
+    /// related models.
+    ///
+    /// # Arguments
+    ///
+    /// * `relation` - The name of the relation to load
+    /// * `modifier` - A closure that receives a QueryBuilder and returns it modified
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// let users = db.model::<User>()
+    ///     .with_query("posts", |query| {
+    ///         query.filter("status", Op::Eq, "published").limit(5)
+    ///     })
+    ///     .scan()
+    ///     .await?;
+    /// ```
+    pub fn with_query<F>(mut self, relation: &str, modifier: F) -> Self
+    where
+        F: Fn(QueryBuilder<crate::any_struct::AnyImplStruct, crate::Database>) -> QueryBuilder<crate::any_struct::AnyImplStruct, crate::Database> + Send + Sync + 'static,
+    {
+        self.with_relations.push(relation.to_string());
+        let arc_mod = std::sync::Arc::new(modifier);
+        let wrapper = QueryModifier { modifier: arc_mod };
+        self.with_modifiers.insert(relation.to_string(), std::sync::Arc::new(wrapper));
         self
     }
 
@@ -2790,21 +2830,59 @@ where
     }
 
     /// Executes the query and eager loads the requested relationships.
-    ///
-    /// This method is specifically for cases where you want to load relations
-    /// into models. It requires the return type to implement the `Model` trait.
-    pub async fn scan_with(mut self) -> Result<Vec<T>, sqlx::Error>
+    pub async fn scan_with(self) -> Result<Vec<T>, sqlx::Error>
     where
         T: FromAnyRow + AnyImpl + crate::model::Model + Send + Unpin + 'static,
+        E: Connection + Clone,
+    {
+        self.scan_as_with::<T>().await
+    }
+
+    /// Executes the query, maps the result to a DTO, and eager loads relationships for the DTO.
+    /// 
+    /// This is useful when you want to return a different struct than the Model,
+    /// but still want to take advantage of the Eager Loading system.
+    /// The DTO must implement the `Model` trait (can be derived with #[orm(table = "...")])
+    pub async fn scan_as_with<R>(mut self) -> Result<Vec<R>, sqlx::Error>
+    where
+        R: FromAnyRow + AnyImpl + crate::model::Model + Send + Unpin + 'static,
         E: Clone,
     {
         let with_relations = std::mem::take(&mut self.with_relations);
+        let with_modifiers = std::mem::take(&mut self.with_modifiers);
         let tx = self.tx.clone();
-        let mut results: Vec<T> = self.scan::<T>().await?;
+        
+        // Execute the main query and map to R
+        let mut results: Vec<R> = self.scan_as::<R>().await?;
 
         if !results.is_empty() && !with_relations.is_empty() {
-            for relation in with_relations {
-                T::load_relations(&relation, &mut results, &tx).await?;
+            let mut grouped: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
+            for rel in with_relations {
+                if let Some(pos) = rel.find('.') {
+                    let base = rel[..pos].to_string();
+                    let nested = rel[pos + 1..].to_string();
+                    grouped.entry(base).or_default().push(nested);
+                } else {
+                    grouped.entry(rel).or_default();
+                }
+            }
+
+            for (base, nested_parts) in grouped {
+                let modifier = with_modifiers.get(&base).cloned();
+                
+                let full_rel = if nested_parts.is_empty() {
+                    base
+                } else {
+                    let filtered: Vec<_> = nested_parts.into_iter().filter(|s| !s.is_empty()).collect();
+                    if filtered.is_empty() {
+                        base
+                    } else if filtered.len() == 1 {
+                        format!("{}.{}", base, filtered[0])
+                    } else {
+                        format!("{}.({})", base, filtered.join("|"))
+                    }
+                };
+                R::load_relations(&full_rel, &mut results, &tx, modifier).await?;
             }
         }
 

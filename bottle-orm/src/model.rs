@@ -80,6 +80,7 @@
 use std::collections::HashMap;
 use futures::future::BoxFuture;
 use crate::database::Connection;
+use crate::query_builder::QueryBuilder;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RelationType {
@@ -494,23 +495,14 @@ pub trait Model {
     /// # Returns
     ///
     /// A vector of `ColumnInfo` structs describing each column
-    ///
-    /// # Example
-    ///
-    /// ```rust,ignore
-    /// #[derive(Model)]
-    /// struct User {
-    ///     #[orm(primary_key)]
-    ///     id: Uuid,
-    ///     username: String,
-    /// }
-    ///
-    /// let columns = User::columns();
-    /// assert_eq!(columns.len(), 2);
-    /// assert!(columns[0].is_primary_key);
-    /// assert_eq!(columns[1].sql_type, "TEXT");
-    /// ```
     fn columns() -> Vec<ColumnInfo>;
+
+    /// Returns the names of all columns in the model.
+    ///
+    /// # Returns
+    ///
+    /// A vector of Strings containing column names
+    fn column_names() -> Vec<String>;
 
     /// Returns the names of active columns (struct fields).
     ///
@@ -560,10 +552,12 @@ pub trait Model {
     /// * `relation_name` - The name of the relation to load
     /// * `models` - A mutable slice of model instances
     /// * `tx` - The database connection
+    /// * `query_modifier` - An optional closure to modify the query
     fn load_relations<'a>(
         _relation_name: &'a str,
         _models: &'a mut [Self],
         _tx: &'a dyn Connection,
+        _query_modifier: Option<std::sync::Arc<dyn std::any::Any + Send + Sync>>,
     ) -> BoxFuture<'a, Result<(), sqlx::Error>>
     where
         Self: Sized,

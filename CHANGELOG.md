@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.7] - 2026-03-05
+
+### Added
+- **Nested Eager Loading**: Support for deep relationship paths using dot notation (e.g., `.with("posts.comments")`).
+- **Relation Query Options**: Added support for inline query configuration in relationship strings, such as `.with("posts[limit=5,order=id DESC]")`.
+- **Custom Relationship Queries**: Introduced `.with_query(relation, closure)` which allows using the full `QueryBuilder` API to filter, sort, and limit related records with total safety against SQL Injection.
+- **DTO Support for Eager Loading**: Added `#[orm(table = "name")]` attribute to allow mapping DTO structs to database tables.
+- **Advanced Scanning**: Introduced `scan_as_with::<DTO>()` to load results into custom structs while maintaining full eager loading capabilities.
+- **Grouped Relationship Loading**: Optimized the Query Builder to automatically group multiple requests for the same base relationship, preventing redundant database queries and field overwriting.
+- **Trait `Model` Enhancements**: Added `column_names()` method to provide a clean list of column strings, keeping `columns()` for full metadata.
+
+### Internal
+- **Connection Cloning**: Added `clone_db()` to the `Connection` trait to safely spawn independent connections for relationship loading, avoiding deadlocks in transactions.
+- **Transaction Resilience**: Updated `Transaction` to store the original connection pool, enabling eager loading operations within transaction scopes.
+- **Safe Closure Downcasting**: Implemented a `QueryModifier` wrapper to allow type-safe transfer of configuration closures from the main Query Builder to the procedural macro.
+- **Placeholder Model**: Added `AnyImplStruct` to serve as a generic placeholder for dynamic query building in internal macros.
+
 ## [0.5.6] - 2026-03-05
 
 ### Fixed

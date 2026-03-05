@@ -17,6 +17,7 @@ impl Model for UserV1 {
             ColumnInfo { name: "name", sql_type: "TEXT", is_primary_key: false, is_nullable: false, create_time: false, update_time: false, unique: false, index: false, foreign_table: None, foreign_key: None, omit: false, soft_delete: false },
         ]
     }
+    fn column_names() -> Vec<String> { vec!["id".to_string(), "name".to_string()] }
     fn active_columns() -> Vec<&'static str> { vec!["id", "name"] }
     fn to_map(&self) -> HashMap<String, Option<String>> {
         let mut map = HashMap::new();
@@ -45,6 +46,7 @@ impl Model for UserV2 {
             ColumnInfo { name: "email", sql_type: "TEXT", is_primary_key: false, is_nullable: false, create_time: false, update_time: false, unique: false, index: true, foreign_table: None, foreign_key: None, omit: false, soft_delete: false },
         ]
     }
+    fn column_names() -> Vec<String> { vec!["id".to_string(), "name".to_string(), "age".to_string(), "email".to_string()] }
     fn active_columns() -> Vec<&'static str> { vec!["id", "name", "age", "email"] }
     fn to_map(&self) -> HashMap<String, Option<String>> {
         let mut map = HashMap::new();
@@ -117,6 +119,7 @@ async fn test_migration_index_diffing() -> Result<(), Box<dyn std::error::Error>
                 ColumnInfo { name: "name", sql_type: "TEXT", is_primary_key: false, is_nullable: false, create_time: false, update_time: false, unique: false, index: true, foreign_table: None, foreign_key: None, omit: false, soft_delete: false },
             ]
         }
+        fn column_names() -> Vec<String> { vec!["id".to_string(), "name".to_string()] }
         fn active_columns() -> Vec<&'static str> { vec!["id", "name"] }
         fn to_map(&self) -> HashMap<String, Option<String>> {
             let mut map = HashMap::new();

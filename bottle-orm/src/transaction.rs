@@ -33,6 +33,7 @@ use crate::{
 #[derive(Debug, Clone)]
 pub struct Transaction<'a> {
     pub(crate) tx: Arc<Mutex<Option<sqlx::Transaction<'a, sqlx::Any>>>>,
+    pub(crate) pool: sqlx::AnyPool,
     pub(crate) driver: Drivers,
 }
 
@@ -87,6 +88,13 @@ impl Connection for Transaction<'_> {
                 Err(sqlx::Error::WorkerCrashed)
             }
         })
+    }
+
+    fn clone_db(&self) -> crate::Database {
+        crate::Database {
+            pool: self.pool.clone(),
+            driver: self.driver,
+        }
     }
 }
 

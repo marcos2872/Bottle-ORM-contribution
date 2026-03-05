@@ -105,6 +105,7 @@ impl Database {
         let tx = self.pool.begin().await?;
         Ok(crate::transaction::Transaction {
             tx: Arc::new(tokio::sync::Mutex::new(Some(tx))),
+            pool: self.pool.clone(),
             driver: self.driver,
         })
     }
@@ -388,6 +389,7 @@ pub trait Connection: Send + Sync {
     fn fetch_all<'a, 'q: 'a>(&'a self, sql: &'q str, args: AnyArguments<'q>) -> BoxFuture<'a, Result<Vec<sqlx::any::AnyRow>, sqlx::Error>>;
     fn fetch_one<'a, 'q: 'a>(&'a self, sql: &'q str, args: AnyArguments<'q>) -> BoxFuture<'a, Result<sqlx::any::AnyRow, sqlx::Error>>;
     fn fetch_optional<'a, 'q: 'a>(&'a self, sql: &'q str, args: AnyArguments<'q>) -> BoxFuture<'a, Result<Option<sqlx::any::AnyRow>, sqlx::Error>>;
+    fn clone_db(&self) -> Database;
 }
 
 impl Connection for Database {
@@ -404,6 +406,7 @@ impl Connection for Database {
     fn fetch_optional<'a, 'q: 'a>(&'a self, sql: &'q str, args: AnyArguments<'q>) -> BoxFuture<'a, Result<Option<sqlx::any::AnyRow>, sqlx::Error>> {
         Box::pin(async move { sqlx::query_with(sql, args).fetch_optional(&self.pool).await })
     }
+    fn clone_db(&self) -> Database { self.clone() }
 }
 
 // ============================================================================

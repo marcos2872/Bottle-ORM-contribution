@@ -23,9 +23,37 @@ pub struct AnyInfo {
     pub table: &'static str,
 }
 
-// ============================================================================
-// AnyImpl Trait
-// ============================================================================
+/// A generic placeholder struct that implements AnyImpl.
+/// Used in closures where a concrete model type is required but any model should be accepted.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AnyImplStruct {}
+
+impl AnyImpl for AnyImplStruct {
+    fn columns() -> Vec<AnyInfo> { Vec::new() }
+    fn to_map(&self) -> HashMap<String, Option<String>> { HashMap::new() }
+}
+
+impl FromAnyRow for AnyImplStruct {
+    fn from_any_row(_row: &AnyRow) -> Result<Self, Error> { Ok(AnyImplStruct {}) }
+    fn from_any_row_at(_row: &AnyRow, _index: &mut usize) -> Result<Self, Error> { Ok(AnyImplStruct {}) }
+}
+
+impl crate::model::Model for AnyImplStruct {
+    fn table_name() -> &'static str { "" }
+    fn columns() -> Vec<crate::model::ColumnInfo> { Vec::new() }
+    fn column_names() -> Vec<String> { Vec::new() }
+    fn active_columns() -> Vec<&'static str> { Vec::new() }
+    fn relations() -> Vec<crate::model::RelationInfo> { Vec::new() }
+    fn load_relations<'a>(
+        _relation_name: &'a str,
+        _models: &'a mut [Self],
+        _tx: &'a dyn crate::database::Connection,
+        _query_modifier: Option<std::sync::Arc<dyn std::any::Any + Send + Sync>>,
+    ) -> futures::future::BoxFuture<'a, Result<(), sqlx::Error>> {
+        Box::pin(async move { Ok(()) })
+    }
+    fn to_map(&self) -> HashMap<String, Option<String>> { HashMap::new() }
+}
 
 /// A trait for types that can be mapped from an `AnyRow` and provide column metadata.
 ///
