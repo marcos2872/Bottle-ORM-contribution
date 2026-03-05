@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.6] - 2026-03-05
+
+### Added
+- **Compilable Documentation Tests**: Fixed multiple `QueryBuilder` doctests by removing `ignore` and adding necessary setup. This ensures examples for `new`, `filter`, `or_filter`, `not_filter`, `or_not_filter`, `between`, `or_between`, `in_list`, and `or_in_list` are verified during `cargo test`.
+- **Improved QueryBuilder Documentation**: Significantly expanded documentation for `or_in_list`, `or_where_raw`, `left_join_raw`, `right_join_raw`, `inner_join_raw`, `full_join_raw`, `update`, `updates`, and `update_partial` with detailed argument descriptions and practical examples.
+
+### Fixed
+- **Doctest Type Bounds**: Standardized string literal handling in documentation examples using `.to_string()` to satisfy `sqlx::Any` trait bounds, preventing compilation errors in examples.
+
 ## [0.5.5] - 2026-03-04
 
 ### Added

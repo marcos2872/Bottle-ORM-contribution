@@ -60,7 +60,7 @@ pub struct UsersGet {
 
 #[tokio::test]
 async fn test_list_users_complex_query() -> Result<(), Box<dyn std::error::Error>> {
-    // Usando a configuração correta para SQLite em memória
+    // Using correct configuration for SQLite in memory
     let db = Database::builder()
         .max_connections(1)
         .connect("sqlite::memory:")
@@ -107,7 +107,7 @@ async fn test_list_users_complex_query() -> Result<(), Box<dyn std::error::Error
     };
     db.model::<Session>().insert(&session).await?;
 
-    // Query Builder - Exatamente como no código do usuário
+    // Query Builder - Exactly as in user code
     let query_builder = db.model::<User>()
         .left_join("session", "session.user_id = user.id")
         .left_join("account", "account.user_id = user.id")
@@ -118,7 +118,7 @@ async fn test_list_users_complex_query() -> Result<(), Box<dyn std::error::Error
     let sql = query_builder.to_sql();
     println!("Generated SQL: {}", sql);
 
-    // Teste de mapeamento para o DTO UsersGet
+    // Mapping test for UsersGet DTO
     let results: Vec<UsersGet> = query_builder.scan_as::<UsersGet>().await?;
 
     assert_eq!(results.len(), 1);
@@ -130,10 +130,10 @@ async fn test_list_users_complex_query() -> Result<(), Box<dyn std::error::Error
     assert!(dto.last_seen.is_some());
     assert_eq!(dto.status, "active");
     
-    // Verificação de Segurança (Aspas em identificadores e tabelas)
-    assert!(sql.contains("\"user\".*") || sql.contains("\"user\".\"id\""), "Wildcard ou colunas de user devem estar protegidos");
-    assert!(sql.contains("\"session\".\"last_seen\""), "Colunas joinadas devem estar protegidas");
-    assert!(sql.contains("\"account\".\"account_type\""), "Colunas joinadas devem estar protegidas");
+    // Security Verification (Quotes in identifiers and tables)
+    assert!(sql.contains("\"user\".*") || sql.contains("\"user\".\"id\""), "Wildcard or user columns should be protected");
+    assert!(sql.contains("\"session\".\"last_seen\""), "Joined columns should be protected");
+    assert!(sql.contains("\"account\".\"account_type\""), "Joined columns should be protected");
 
     Ok(())
 }

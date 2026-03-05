@@ -87,7 +87,7 @@ async fn delete_user(
     tx.commit().await.map_err(|e| e.to_string())?;
 
     Ok(Json(Responses::Message {
-        message: format!("{} {} foi banido com sucesso.", first_name, last_name),
+        message: format!("{} {} has been banned successfully.", first_name, last_name),
     }))
 }
 

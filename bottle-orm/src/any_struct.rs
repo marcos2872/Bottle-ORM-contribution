@@ -70,9 +70,12 @@ macro_rules! impl_supported_primitive {
                 }
 
                 fn from_any_row_at(row: &AnyRow, index: &mut usize) -> Result<Self, Error> {
-                    let val = row.try_get(*index).map_err(|e| Error::Decode(Box::new(e)))?;
+                    if *index >= row.len() {
+                        return Err(Error::ColumnIndexOutOfBounds { index: *index, len: row.len() });
+                    }
+                    let res = row.try_get(*index);
                     *index += 1;
-                    Ok(val)
+                    res.map_err(|e| Error::Decode(Box::new(e)))
                 }
             }
         )*
@@ -98,8 +101,12 @@ macro_rules! impl_cast_primitive {
                 }
 
                 fn from_any_row_at(row: &AnyRow, index: &mut usize) -> Result<Self, Error> {
-                    let val: i64 = row.try_get(*index).map_err(|e| Error::Decode(Box::new(e)))?;
+                    if *index >= row.len() {
+                        return Err(Error::ColumnIndexOutOfBounds { index: *index, len: row.len() });
+                    }
+                    let res = row.try_get::<i64, _>(*index);
                     *index += 1;
+                    let val = res.map_err(|e| Error::Decode(Box::new(e)))?;
                     Ok(val as $t)
                 }
             }
@@ -140,10 +147,12 @@ where
     }
 
     fn from_any_row_at(row: &AnyRow, index: &mut usize) -> Result<Self, Error> {
-        // sqlx::Any typically returns complex types like Arrays and JSON as strings
-        // especially when we use our Postgres to_json/casting logic or in SQLite.
-        let s: String = row.try_get(*index).map_err(|e| Error::Decode(Box::new(e)))?;
+        if *index >= row.len() {
+            return Err(Error::ColumnIndexOutOfBounds { index: *index, len: row.len() });
+        }
+        let res = row.try_get::<String, _>(*index);
         *index += 1;
+        let s = res.map_err(|e| Error::Decode(Box::new(e)))?;
         serde_json::from_str(&s).map_err(|e| Error::Decode(Box::new(e)))
     }
 }
@@ -166,8 +175,12 @@ impl FromAnyRow for serde_json::Value {
     }
 
     fn from_any_row_at(row: &AnyRow, index: &mut usize) -> Result<Self, Error> {
-        let s: String = row.try_get(*index).map_err(|e| Error::Decode(Box::new(e)))?;
+        if *index >= row.len() {
+            return Err(Error::ColumnIndexOutOfBounds { index: *index, len: row.len() });
+        }
+        let res = row.try_get::<String, _>(*index);
         *index += 1;
+        let s = res.map_err(|e| Error::Decode(Box::new(e)))?;
         serde_json::from_str(&s).map_err(|e| Error::Decode(Box::new(e)))
     }
 }
@@ -192,8 +205,12 @@ impl FromAnyRow for uuid::Uuid {
     }
 
     fn from_any_row_at(row: &AnyRow, index: &mut usize) -> Result<Self, Error> {
-        let s: String = row.try_get(*index).map_err(|e| Error::Decode(Box::new(e)))?;
+        if *index >= row.len() {
+            return Err(Error::ColumnIndexOutOfBounds { index: *index, len: row.len() });
+        }
+        let res = row.try_get::<String, _>(*index);
         *index += 1;
+        let s = res.map_err(|e| Error::Decode(Box::new(e)))?;
         s.parse().map_err(|e| Error::Decode(Box::new(e)))
     }
 }
@@ -214,6 +231,9 @@ impl FromAnyRow for chrono::NaiveDateTime {
     }
 
     fn from_any_row_at(row: &AnyRow, index: &mut usize) -> Result<Self, Error> {
+        if *index >= row.len() {
+            return Err(Error::ColumnIndexOutOfBounds { index: *index, len: row.len() });
+        }
         let res = row.try_get::<String, _>(*index);
         match res {
             Ok(s) => {
@@ -226,6 +246,14 @@ impl FromAnyRow for chrono::NaiveDateTime {
                     *index += 1;
                     return Ok(chrono::DateTime::from_timestamp(i, 0).map(|dt| dt.naive_utc()).unwrap_or_default());
                 }
+                // If both fail, we should still increment if it's likely a column was there but we couldn't decode it
+                // Actually, for temporal it's tricky, but if it's NULL, both try_get will fail.
+                // Let's check for NULL explicitly.
+                if let Ok(None) = row.try_get::<Option<String>, _>(*index) {
+                     *index += 1;
+                     return Err(Error::Decode(Box::new(e))); // Option will catch this
+                }
+
                 Err(Error::Decode(Box::new(e)))
             }
         }
@@ -248,8 +276,12 @@ impl FromAnyRow for chrono::NaiveDate {
     }
 
     fn from_any_row_at(row: &AnyRow, index: &mut usize) -> Result<Self, Error> {
-        let s: String = row.try_get(*index).map_err(|e| Error::Decode(Box::new(e)))?;
+        if *index >= row.len() {
+            return Err(Error::ColumnIndexOutOfBounds { index: *index, len: row.len() });
+        }
+        let res = row.try_get::<String, _>(*index);
         *index += 1;
+        let s = res.map_err(|e| Error::Decode(Box::new(e)))?;
         crate::temporal::parse_naive_date(&s).map_err(|e| Error::Decode(Box::new(e)))
     }
 }
@@ -270,8 +302,12 @@ impl FromAnyRow for chrono::NaiveTime {
     }
 
     fn from_any_row_at(row: &AnyRow, index: &mut usize) -> Result<Self, Error> {
-        let s: String = row.try_get(*index).map_err(|e| Error::Decode(Box::new(e)))?;
+        if *index >= row.len() {
+            return Err(Error::ColumnIndexOutOfBounds { index: *index, len: row.len() });
+        }
+        let res = row.try_get::<String, _>(*index);
         *index += 1;
+        let s = res.map_err(|e| Error::Decode(Box::new(e)))?;
         crate::temporal::parse_naive_time(&s).map_err(|e| Error::Decode(Box::new(e)))
     }
 }
@@ -292,6 +328,9 @@ impl FromAnyRow for chrono::DateTime<chrono::Utc> {
     }
 
     fn from_any_row_at(row: &AnyRow, index: &mut usize) -> Result<Self, Error> {
+        if *index >= row.len() {
+            return Err(Error::ColumnIndexOutOfBounds { index: *index, len: row.len() });
+        }
         let res = row.try_get::<String, _>(*index);
         match res {
             Ok(s) => {
@@ -304,6 +343,12 @@ impl FromAnyRow for chrono::DateTime<chrono::Utc> {
                     *index += 1;
                     return Ok(chrono::DateTime::from_timestamp(i, 0).unwrap_or_else(|| chrono::DateTime::<chrono::Utc>::from_naive_utc_and_offset(chrono::NaiveDateTime::default(), chrono::Utc)));
                 }
+                
+                if let Ok(None) = row.try_get::<Option<String>, _>(*index) {
+                    *index += 1;
+                    return Err(Error::Decode(Box::new(e)));
+                }
+
                 Err(Error::Decode(Box::new(e)))
             }
         }

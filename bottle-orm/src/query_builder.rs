@@ -324,9 +324,21 @@ where
     ///
     /// # Example
     ///
-    /// ```rust,ignore
+    /// ```rust
+    /// # use bottle_orm::{Database, Model};
+    /// # #[derive(Model, Debug, Clone)]
+    /// # struct User {
+    /// #     #[orm(primary_key)]
+    /// #     id: i32,
+    /// #     username: String,
+    /// # }
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// #     let db = Database::connect("sqlite::memory:").await?;
     /// // Usually called via db.model::<User>()
     /// let query = db.model::<User>();
+    /// #     Ok(())
+    /// # }
     /// ```
     pub fn new(
         tx: E,
@@ -650,9 +662,20 @@ where
     ///
     /// # Example
     ///
-    /// ```rust,ignore
-    /// query.filter("age", Op::Gte, 18)
-    /// // SQL: AND "age" >= 18
+    /// ```rust
+    /// # use bottle_orm::{Database, Model, Op};
+    /// # #[derive(Model, Debug, Clone)]
+    /// # struct User {
+    /// #     #[orm(primary_key)]
+    /// #     id: i32,
+    /// #     age: i32,
+    /// # }
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// #     let db = Database::connect("sqlite::memory:").await?;
+    /// let query = db.model::<User>().filter("age", Op::Gte, 18);
+    /// #     Ok(())
+    /// # }
     /// ```
     pub fn filter<V>(self, col: &'static str, op: Op, value: V) -> Self
     where
@@ -671,9 +694,23 @@ where
     ///
     /// # Example
     ///
-    /// ```rust,ignore
-    /// query.filter("age", Op::Lt, 18).or_filter("active", Op::Eq, false)
-    /// // SQL: AND "age" < 18 OR "active" = false
+    /// ```rust
+    /// # use bottle_orm::{Database, Model, Op};
+    /// # #[derive(Model, Debug, Clone)]
+    /// # struct User {
+    /// #     #[orm(primary_key)]
+    /// #     id: i32,
+    /// #     age: i32,
+    /// #     active: bool,
+    /// # }
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// #     let db = Database::connect("sqlite::memory:").await?;
+    /// let query = db.model::<User>()
+    ///     .filter("age", Op::Lt, 18)
+    ///     .or_filter("active", Op::Eq, false);
+    /// #     Ok(())
+    /// # }
     /// ```
     pub fn or_filter<V>(self, col: &'static str, op: Op, value: V) -> Self
     where
@@ -692,9 +729,20 @@ where
     ///
     /// # Example
     ///
-    /// ```rust,ignore
-    /// query.not_filter("status", Op::Eq, "banned")
-    /// // SQL: AND NOT "status" = 'banned'
+    /// ```rust
+    /// # use bottle_orm::{Database, Model, Op};
+    /// # #[derive(Model, Debug, Clone)]
+    /// # struct User {
+    /// #     #[orm(primary_key)]
+    /// #     id: i32,
+    /// #     status: String,
+    /// # }
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// #     let db = Database::connect("sqlite::memory:").await?;
+    /// let query = db.model::<User>().not_filter("status", Op::Eq, "banned".to_string());
+    /// #     Ok(())
+    /// # }
     /// ```
     pub fn not_filter<V>(self, col: &'static str, op: Op, value: V) -> Self
     where
@@ -713,9 +761,23 @@ where
     ///
     /// # Example
     ///
-    /// ```rust,ignore
-    /// query.filter("age", Op::Gt, 18).or_not_filter("status", Op::Eq, "inactive")
-    /// // SQL: AND "age" > 18 OR NOT "status" = 'inactive'
+    /// ```rust
+    /// # use bottle_orm::{Database, Model, Op};
+    /// # #[derive(Model, Debug, Clone)]
+    /// # struct User {
+    /// #     #[orm(primary_key)]
+    /// #     id: i32,
+    /// #     age: i32,
+    /// #     status: String,
+    /// # }
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// #     let db = Database::connect("sqlite::memory:").await?;
+    /// let query = db.model::<User>()
+    ///     .filter("age", Op::Gt, 18)
+    ///     .or_not_filter("status", Op::Eq, "inactive".to_string());
+    /// #     Ok(())
+    /// # }
     /// ```
     pub fn or_not_filter<V>(self, col: &'static str, op: Op, value: V) -> Self
     where
@@ -734,9 +796,20 @@ where
     ///
     /// # Example
     ///
-    /// ```rust,ignore
-    /// query.between("age", 18, 30)
-    /// // SQL: AND "age" BETWEEN 18 AND 30
+    /// ```rust
+    /// # use bottle_orm::{Database, Model, Op};
+    /// # #[derive(Model, Debug, Clone)]
+    /// # struct User {
+    /// #     #[orm(primary_key)]
+    /// #     id: i32,
+    /// #     age: i32,
+    /// # }
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// #     let db = Database::connect("sqlite::memory:").await?;
+    /// let query = db.model::<User>().between("age", 18, 30);
+    /// #     Ok(())
+    /// # }
     /// ```
     pub fn between<V>(mut self, col: &'static str, start: V, end: V) -> Self
     where
@@ -780,9 +853,23 @@ where
     ///
     /// # Example
     ///
-    /// ```rust,ignore
-    /// query.between("age", 18, 30).or_between("salary", 5000, 10000)
-    /// // SQL: AND "age" BETWEEN 18 AND 30 OR "salary" BETWEEN 5000 AND 10000
+    /// ```rust
+    /// # use bottle_orm::{Database, Model, Op};
+    /// # #[derive(Model, Debug, Clone)]
+    /// # struct User {
+    /// #     #[orm(primary_key)]
+    /// #     id: i32,
+    /// #     age: i32,
+    /// #     salary: i32,
+    /// # }
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// #     let db = Database::connect("sqlite::memory:").await?;
+    /// let query = db.model::<User>()
+    ///     .between("age", 18, 30)
+    ///     .or_between("salary", 5000, 10000);
+    /// #     Ok(())
+    /// # }
     /// ```
     pub fn or_between<V>(mut self, col: &'static str, start: V, end: V) -> Self
     where
@@ -825,9 +912,20 @@ where
     ///
     /// # Example
     ///
-    /// ```rust,ignore
-    /// query.in_list("status", vec!["active", "pending"])
-    /// // SQL: AND "status" IN ('active', 'pending')
+    /// ```rust
+    /// # use bottle_orm::{Database, Model, Op};
+    /// # #[derive(Model, Debug, Clone)]
+    /// # struct User {
+    /// #     #[orm(primary_key)]
+    /// #     id: i32,
+    /// #     status: String,
+    /// # }
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// #     let db = Database::connect("sqlite::memory:").await?;
+    /// let query = db.model::<User>().in_list("status", vec!["active".to_string(), "pending".to_string()]);
+    /// #     Ok(())
+    /// # }
     /// ```
     pub fn in_list<V>(mut self, col: &'static str, values: Vec<V>) -> Self
     where
@@ -877,6 +975,32 @@ where
     }
 
     /// Adds an OR IN list clause to the query.
+    ///
+    /// # Arguments
+    ///
+    /// * `col` - The column name
+    /// * `values` - A vector of values
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # use bottle_orm::{Database, Model, Op};
+    /// # #[derive(Model, Debug, Clone)]
+    /// # struct User {
+    /// #     #[orm(primary_key)]
+    /// #     id: i32,
+    /// #     status: String,
+    /// #     role: String,
+    /// # }
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// #     let db = Database::connect("sqlite::memory:").await?;
+    /// let query = db.model::<User>()
+    ///     .filter("status", Op::Eq, "active".to_string())
+    ///     .or_in_list("role", vec!["admin".to_string(), "editor".to_string()]);
+    /// #     Ok(())
+    /// # }
+    /// ```
     pub fn or_in_list<V>(mut self, col: &'static str, values: Vec<V>) -> Self
     where
         V: 'static + for<'q> Encode<'q, Any> + Type<Any> + Send + Sync + Clone,
@@ -1026,6 +1150,22 @@ where
     }
 
     /// Adds a raw OR WHERE clause with a placeholder.
+    ///
+    /// # Arguments
+    ///
+    /// * `sql` - Raw SQL string with one `?` placeholder
+    /// * `value` - Value to bind
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// db.model::<User>()
+    ///     .filter("active", Op::Eq, true)
+    ///     .or_where_raw("age > ?", 18)
+    ///     .scan()
+    ///     .await?;
+    /// // SQL: AND "active" = true OR age > 18
+    /// ```
     pub fn or_where_raw<V>(mut self, sql: &str, value: V) -> Self
     where
         V: 'static + for<'q> Encode<'q, Any> + Type<Any> + Send + Sync + Clone,
@@ -1364,10 +1504,16 @@ where
 
     /// Adds a raw LEFT JOIN clause with a placeholder and a bound value.
     ///
+    /// # Arguments
+    ///
+    /// * `table` - The name of the table to join (with optional alias)
+    /// * `on` - The join condition with a `?` placeholder
+    /// * `value` - The value to bind
+    ///
     /// # Example
     ///
     /// ```rust,ignore
-    /// query.left_join_raw("posts", "posts.user_id = ?", user_id)
+    /// query.left_join_raw("posts p", "p.user_id = u.id AND p.status = ?", "published")
     /// ```
     pub fn left_join_raw<V>(self, table: &str, on: &str, value: V) -> Self
     where
@@ -1378,10 +1524,16 @@ where
 
     /// Adds a raw RIGHT JOIN clause with a placeholder and a bound value.
     ///
+    /// # Arguments
+    ///
+    /// * `table` - The name of the table to join (with optional alias)
+    /// * `on` - The join condition with a `?` placeholder
+    /// * `value` - The value to bind
+    ///
     /// # Example
     ///
     /// ```rust,ignore
-    /// query.right_join_raw("users", "users.id = ?", user_id)
+    /// query.right_join_raw("users u", "u.id = p.user_id AND u.active = ?", true)
     /// ```
     pub fn right_join_raw<V>(self, table: &str, on: &str, value: V) -> Self
     where
@@ -1392,10 +1544,16 @@ where
 
     /// Adds a raw INNER JOIN clause with a placeholder and a bound value.
     ///
+    /// # Arguments
+    ///
+    /// * `table` - The name of the table to join (with optional alias)
+    /// * `on` - The join condition with a `?` placeholder
+    /// * `value` - The value to bind
+    ///
     /// # Example
     ///
     /// ```rust,ignore
-    /// query.inner_join_raw("accounts", "accounts.user_id = ?", user_id)
+    /// query.inner_join_raw("accounts a", "a.user_id = u.id AND a.type = ?", "checking")
     /// ```
     pub fn inner_join_raw<V>(self, table: &str, on: &str, value: V) -> Self
     where
@@ -1406,10 +1564,16 @@ where
 
     /// Adds a raw FULL JOIN clause with a placeholder and a bound value.
     ///
+    /// # Arguments
+    ///
+    /// * `table` - The name of the table to join (with optional alias)
+    /// * `on` - The join condition with a `?` placeholder
+    /// * `value` - The value to bind
+    ///
     /// # Example
     ///
     /// ```rust,ignore
-    /// query.full_join_raw("profiles", "profiles.user_id = ?", user_id)
+    /// query.full_join_raw("profiles pr", "pr.user_id = u.id AND pr.verified = ?", true)
     /// ```
     pub fn full_join_raw<V>(self, table: &str, on: &str, value: V) -> Self
     where
@@ -2749,16 +2913,25 @@ where
         O::from_any_row(&row)
     }
 
-    /// Updates a single column in the database.
+    /// Updates a single column in the database for all rows matching the filters.
     ///
     /// # Arguments
     ///
     /// * `col` - The column name to update
-    /// * `value` - The new value
+    /// * `value` - The new value (supports primitive types and Option for NULL)
     ///
     /// # Returns
     ///
     /// * `Ok(u64)` - The number of rows affected
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// db.model::<User>()
+    ///     .filter("id", Op::Eq, 1)
+    ///     .update("active", false)
+    ///     .await?;
+    /// ```
     pub fn update<'b, V>(&'b mut self, col: &str, value: V) -> BoxFuture<'b, Result<u64, sqlx::Error>>
     where
         V: ToUpdateValue + Send + Sync,
@@ -2768,9 +2941,10 @@ where
         self.execute_update(map)
     }
 
-    /// Updates all columns based on the model instance.
+    /// Updates columns based on a model instance for all rows matching the filters.
     ///
-    /// This method updates all active columns of the table with values from the provided model.
+    /// This method updates the table with values from the provided model.
+    /// Note: It updates ALL columns present in the model's `to_map()`.
     ///
     /// # Arguments
     ///
@@ -2779,6 +2953,16 @@ where
     /// # Returns
     ///
     /// * `Ok(u64)` - The number of rows affected
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// let user = User { id: 1, username: "new_name".to_string(), ... };
+    /// db.model::<User>()
+    ///     .filter("id", Op::Eq, 1)
+    ///     .updates(&user)
+    ///     .await?;
+    /// ```
     pub fn updates<'b>(&'b mut self, model: &T) -> BoxFuture<'b, Result<u64, sqlx::Error>> {
         self.execute_update(Model::to_map(model))
     }
@@ -2795,6 +2979,22 @@ where
     /// # Returns
     ///
     /// * `Ok(u64)` - The number of rows affected
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// #[derive(AnyRow)]
+    /// struct UserUpdate {
+    ///     username: String,
+    ///     active: bool,
+    /// }
+    ///
+    /// let partial = UserUpdate { username: "updated".into(), active: true };
+    /// db.model::<User>()
+    ///     .filter("id", Op::Eq, 1)
+    ///     .update_partial(&partial)
+    ///     .await?;
+    /// ```
     pub fn update_partial<'b, P: AnyImpl>(&'b mut self, partial: &P) -> BoxFuture<'b, Result<u64, sqlx::Error>> {
         self.execute_update(AnyImpl::to_map(partial))
     }

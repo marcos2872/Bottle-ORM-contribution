@@ -2,7 +2,7 @@ use bottle_orm::{Database, Model, ColumnInfo};
 use uuid::Uuid;
 use std::collections::HashMap;
 
-// Versão 1 do Model
+// Version 1 of the Model
 #[derive(Debug, Clone, PartialEq)]
 struct UserV1 {
     id: Uuid,
@@ -26,7 +26,7 @@ impl Model for UserV1 {
     }
 }
 
-// Versão 2 do Model (Adiciona 'age' e um índice em 'email')
+// Version 2 of the Model (Adds 'age' and an index on 'email')
 #[derive(Debug, Clone, PartialEq)]
 struct UserV2 {
     id: Uuid,
@@ -60,25 +60,25 @@ impl Model for UserV2 {
 async fn test_migration_diffing_evolution() -> Result<(), Box<dyn std::error::Error>> {
     let db = Database::builder().max_connections(1).connect("sqlite::memory:").await?;
 
-    // 1. Criar V1
+    // 1. Create V1
     db.sync_table::<UserV1>().await?;
     
-    // Inserir dado na V1
+    // Insert data into V1
     let id = Uuid::new_v4();
     db.raw("INSERT INTO users_evolution (id, name) VALUES (?, ?)")
         .bind(id.to_string())
         .bind("Alice".to_string())
         .execute().await?;
 
-    // 2. Rodar diffing para V2
+    // 2. Run diffing for V2
     db.sync_table::<UserV2>().await?;
 
-    // 3. Verificar se as colunas novas existem
+    // 3. Verify that the new columns exist
     let columns = db.get_table_columns("users_evolution").await?;
     assert!(columns.contains(&"age".to_string()));
     assert!(columns.contains(&"email".to_string()));
 
-    // 4. Tentar inserir e ler com o novo Model
+    // 4. Try to insert and read with the new Model
     let id2 = Uuid::new_v4();
     db.raw("INSERT INTO users_evolution (id, name, age, email) VALUES (?, ?, ?, ?)")
         .bind(id2.to_string())
@@ -95,14 +95,14 @@ async fn test_migration_diffing_evolution() -> Result<(), Box<dyn std::error::Er
 async fn test_migration_index_diffing() -> Result<(), Box<dyn std::error::Error>> {
     let db = Database::builder().max_connections(1).connect("sqlite::memory:").await?;
 
-    // 1. Criar V1 (sem índice em name)
+    // 1. Create V1 (without index on name)
     db.sync_table::<UserV1>().await?;
     
     let indexes = db.get_table_indexes("users_evolution").await?;
     // SQLite might have internal indexes for PK, but shouldn't have idx_users_evolution_name
     assert!(!indexes.contains(&"idx_users_evolution_name".to_string()));
 
-    // 2. Definir Model V1.5 (com índice em name)
+    // 2. Define Model V1.5 (with index on name)
     #[derive(Debug, Clone, PartialEq)]
     struct UserV1_5 {
         id: Uuid,
@@ -126,10 +126,10 @@ async fn test_migration_index_diffing() -> Result<(), Box<dyn std::error::Error>
         }
     }
 
-    // 3. Rodar sync
+    // 3. Run sync
     db.sync_table::<UserV1_5>().await?;
 
-    // 4. Verificar se o índice foi criado
+    // 4. Verify if the index was created
     let indexes = db.get_table_indexes("users_evolution").await?;
     assert!(indexes.contains(&"idx_users_evolution_name".to_string()));
 
